@@ -1,7 +1,9 @@
+use crate::bitmap::Bitmap;
 use clipper2::{EndType, JoinType, One, Path, Paths, Point};
 type IntPoint = Point<One>;
 type IntPath = Path<One>;
 type IntPaths = Paths<One>;
+type MPoly = IntPaths;
 
 // - callback: Takes the x, y coords and x-span (x_end is not inclusive),
 //   note that `x_end` will always be greater than `x`.
@@ -10,243 +12,104 @@ fn fill_poly_v2i_n<F: FnMut(i32, i32, i32)>(
     ymin: i32,
     xmax: i32,
     ymax: i32,
-    coords: &Vec<[i32; 2]>,
+    rings: &[Vec<[i32; 2]>],
     callback: &mut F,
 ) {
-    /* Originally by Darel Rex Finley, 2007.
-     * Optimized by Campbell Barton, 2016 to keep sorted intersections. */
+    // Even-odd scanline fill across multiple rings.
+    // This supports holes naturally: include the outer ring + the hole ring(s).
+    // Note: this implementation is intentionally simple (not incremental).
+    let mut x_intersections: Vec<i32> = Vec::new();
 
-    /*
-     * Note: all the index lookups here could be made unsafe
-     * (as in, we know they won't fail).
-     */
-
-    // only because we use this with int values frequently, avoids casting every time.
-    let coords_len: i32 = coords.len() as i32;
-
-    let mut span_y: Vec<[i32; 2]> = Vec::with_capacity(coords.len());
-
-    {
-        let mut i_prev: i32 = coords_len - 1;
-        let mut i_curr: i32 = 0;
-        let mut co_prev = &coords[i_prev as usize];
-        for co_curr in coords {
-            if co_prev[1] != co_curr[1] {
-                // Any segments entirely above or below the area of interest can be skipped.
-                if (std::cmp::min(co_prev[1], co_curr[1]) >= ymax)
-                    || (std::cmp::max(co_prev[1], co_curr[1]) < ymin)
-                {
-                    continue;
-                }
-
-                span_y.push(if co_prev[1] < co_curr[1] {
-                    [i_prev, i_curr]
-                } else {
-                    [i_curr, i_prev]
-                });
-            }
-            i_prev = i_curr;
-            i_curr += 1;
-            co_prev = co_curr;
-        }
-    }
-
-    // sort edge-segments on y, then x axis
-    span_y.sort_by(|a, b| {
-        let co_a = &coords[a[0] as usize];
-        let co_b = &coords[b[0] as usize];
-        let mut ord = co_a[1].cmp(&co_b[1]);
-        if ord == std::cmp::Ordering::Equal {
-            ord = co_a[0].cmp(&co_b[0]);
-        }
-        if ord == std::cmp::Ordering::Equal {
-            // co_a & co_b are identical, use the line closest to the x-min
-            let co = co_a; // could be co_b too.
-            let co_a = &coords[a[1] as usize];
-            let co_b = &coords[b[1] as usize];
-            ord = 0.cmp(
-                &(((co_b[0] - co[0]) * (co_a[1] - co[1]))
-                    - ((co_a[0] - co[0]) * (co_b[1] - co[1]))),
-            );
-        }
-        ord
-    });
-
-    // Used to store x intersections for the current y axis ('pixel_y')
-    struct NodeX {
-        span_y_index: usize,
-        // 'x' pixel value for the current 'pixel_y'.
-        x: i32,
-    }
-    let mut node_x: Vec<NodeX> = Vec::with_capacity(coords.len() + 1);
-    let mut span_y_index: usize = 0;
-
-    if span_y.len() != 0 && coords[span_y[0][0] as usize][1] < ymin {
-        while (span_y_index < span_y.len()) && (coords[span_y[span_y_index][0] as usize][1] < ymin)
-        {
-            assert!(
-                coords[span_y[span_y_index][0] as usize][1] < coords[span_y[span_y_index][1] as usize][1]
-            );
-            if coords[span_y[span_y_index][1] as usize][1] >= ymin {
-                node_x.push(NodeX {
-                    span_y_index: span_y_index,
-                    x: -1,
-                });
-            }
-            span_y_index += 1;
-        }
-    }
-
-    // Loop through the rows of the image.
     for pixel_y in ymin..ymax {
-        let mut is_sorted = true;
-        let mut do_remove = false;
-        {
-            let mut x_ix_prev = i32::min_value();
-            for n in &mut node_x {
-                let s = &span_y[n.span_y_index];
-                let co_prev = &coords[s[0] as usize];
-                let co_curr = &coords[s[1] as usize];
+        x_intersections.clear();
 
-                assert!(co_prev[1] < pixel_y && co_curr[1] >= pixel_y);
-                let x = (co_prev[0] - co_curr[0]) as f64;
-                let y = (co_prev[1] - co_curr[1]) as f64;
-                let y_px = (pixel_y - co_curr[1]) as f64;
-                let x_ix = ((co_curr[0] as f64) + ((y_px / y) * x)).round() as i32;
-                n.x = x_ix;
-
-                if is_sorted && (x_ix_prev > x_ix) {
-                    is_sorted = false;
-                }
-                if do_remove == false && co_curr[1] == pixel_y {
-                    do_remove = true;
-                }
-                x_ix_prev = x_ix;
+        for ring in rings {
+            if ring.len() < 2 {
+                continue;
             }
-        }
-        // Theres no reason this will ever be larger
-        assert!(node_x.len() <= coords.len() + 1);
 
-        // Sort the nodes, via a simple "bubble" sort.
-        if is_sorted == false {
-            let node_x_end = node_x.len() - 1;
-            let mut i: usize = 0;
-            while i < node_x_end {
-                if node_x[i].x > node_x[i + 1].x {
-                    node_x.swap(i, i + 1);
-                    if i != 0 {
-                        i -= 1;
+            let last = ring[ring.len() - 1];
+            let mut x0 = last[0];
+            let mut y0 = last[1];
+
+            for &pt in ring {
+                let x1 = pt[0];
+                let y1 = pt[1];
+
+                if y0 != y1 {
+                    let y_min = std::cmp::min(y0, y1);
+                    let y_max = std::cmp::max(y0, y1);
+
+                    // Half-open range to avoid double-counting shared vertices.
+                    if (pixel_y >= y_min) && (pixel_y < y_max) {
+                        // Skip segments entirely outside vertical bounds of interest.
+                        if (y_max >= ymin) && (y_min < ymax) {
+                            let dy = (y1 - y0) as f64;
+                            let t = ((pixel_y - y0) as f64) / dy;
+                            let x = (x0 as f64) + (t * ((x1 - x0) as f64));
+                            x_intersections.push(x.round() as i32);
+                        }
                     }
-                } else {
-                    i += 1;
                 }
+
+                x0 = x1;
+                y0 = y1;
             }
         }
 
-        // Fill the pixels between node pairs.
-        {
-            // TODO, use `node_x.step_by(2)`. When its in stable
-            let mut i = 0;
-            while i < node_x.len() {
-                let mut x_src = node_x[i].x;
-                let mut x_dst = node_x[i + 1].x;
-
-                if x_src >= xmax {
-                    break;
-                }
-
-                if x_dst > xmin {
-                    if x_src < xmin {
-                        x_src = xmin;
-                    }
-                    if x_dst > xmax {
-                        x_dst = xmax;
-                    }
-
-                    // Single call per x-span.
-                    if x_src < x_dst {
-                        callback(x_src - xmin, x_dst - xmin, pixel_y - ymin);
-                    }
-                }
-                i += 2;
-            }
+        if x_intersections.len() < 2 {
+            continue;
         }
 
-        // Clear finalized nodes in one pass, only when needed
-        // (avoids excessive array-resizing).
-        if do_remove {
-            let mut i_dst: usize = 0;
-            for i_src in 0..node_x.len() {
-                let s = &span_y[node_x[i_src].span_y_index];
-                let co = &coords[s[1] as usize];
-                if co[1] != pixel_y {
-                    if i_dst != i_src {
-                        // x is initialized for the next pixel_y (no need to adjust here)
-                        node_x[i_dst].span_y_index = node_x[i_src].span_y_index;
-                    }
-                    i_dst += 1;
-                }
+        x_intersections.sort_unstable();
+
+        for pair in x_intersections.chunks_exact(2) {
+            let mut x_src = pair[0];
+            let mut x_dst = pair[1];
+
+            if x_src >= xmax {
+                break;
             }
-            node_x.truncate(i_dst);
-        }
 
-        // Scan for new events
-        {
-            while span_y_index < span_y.len()
-                && coords[span_y[span_y_index][0] as usize][1] == pixel_y
-            {
-                // Note, node_x these are just added at the end,
-                // not ideal but sorting once will resolve.
-
-                // x is initialized for the next pixel_y
-                node_x.push(NodeX {
-                    span_y_index: span_y_index,
-                    x: -1,
-                });
-                span_y_index += 1;
+            if x_dst > xmin {
+                if x_src < xmin {
+                    x_src = xmin;
+                }
+                if x_dst > xmax {
+                    x_dst = xmax;
+                }
+                if x_src < x_dst {
+                    callback(x_src - xmin, x_dst - xmin, pixel_y - ymin);
+                }
             }
         }
     }
 }
 
-
-/// Create a 2D multipolygon represented as two paths:
-/// - an outer square perimeter
-/// - an inner square hole (opposite winding)
-pub fn make_square_with_hole() -> IntPaths {
-    fn p(x: i64, y: i64) -> IntPoint {
-        IntPoint::from_scaled(x, y)
-    }
-
-    // Outer: counter-clockwise winding (positive signed area when Y increases upward).
-    #[rustfmt::skip]
-    let outer: IntPath = IntPath::new(vec![
-        p(0, 0),
-        p(10, 0),
-        p(10, 10),
-        p(0, 10),
-    ]);
-
-    // Hole: clockwise winding (negative signed area), so a positive dilation shrinks the hole.
-    #[rustfmt::skip]
-    let hole: IntPath = IntPath::new(vec![
-        p(3, 3),
-        p(3, 7),
-        p(7, 7),
-        p(7, 3),
-    ]);
-
-    IntPaths::new(vec![outer, hole])
+fn coords_from_path(path: &IntPath) -> Vec<[i32; 2]> {
+    path.iter()
+        .map(|pt| [pt.x_scaled() as i32, pt.y_scaled() as i32])
+        .collect()
 }
 
-// #[allow(dead_code)]
-// pub type Bitmap<T> = crate::bitmap::Bitmap<T>;
+pub fn raster_int_paths<T: Copy + Default, F: FnMut(&mut Bitmap<T>, i32, i32, i32)>(
+    bitmap: &mut Bitmap<T>,
+    int_paths: &MPoly,
+    mut callback: F,
+) {
+    let rings: Vec<Vec<[i32; 2]>> = int_paths.iter().map(coords_from_path).collect();
+    fill_poly_v2i_n(
+        0,
+        0,
+        bitmap.w as i32,
+        bitmap.h as i32,
+        &rings,
+        &mut |x_start: i32, x_end: i32, y: i32| callback(bitmap, x_start, x_end, y),
+    );
+}
 
 #[cfg(test)]
 mod tests {
-    use std::cmp::{max, min};
-
-    use crate::bitmap::Bitmap;
     use image::RgbaImage;
 
     use super::*;
@@ -255,15 +118,33 @@ mod tests {
         IntPoint::from_scaled(x, y)
     }
 
-    fn coords_from_path(path: &IntPath) -> Vec<[i32; 2]> {
-        path.iter()
-            .map(|pt| [pt.x_scaled() as i32, pt.y_scaled() as i32])
-            .collect()
+    fn ipath(coords: Vec<[i32; 2]>) -> IntPath {
+        IntPath::new(
+            coords
+                .into_iter()
+                .map(|c| p(c[0] as i64, c[1] as i64))
+                .collect(),
+        )
+    }
+
+    fn save_rgba_bitmap(bitmap: &Bitmap<[u8; 4]>, out_path: &str) {
+        let w = bitmap.w;
+        let h = bitmap.h;
+
+        let mut raw: Vec<u8> = Vec::with_capacity(w * h * 4);
+        for px in &bitmap.arr {
+            raw.extend_from_slice(px);
+        }
+
+        let img = RgbaImage::from_raw(w as u32, h as u32, raw).expect("invalid RGBA image buffer");
+        img.save(out_path)
+            .unwrap_or_else(|e| panic!("failed to save {out_path}: {e}"));
     }
 
     #[test]
-    fn draw_poly_from_path() {
-        let coords: Vec<[i32; 2]> = vec![
+    fn erode_no_hole() {
+        // Make IntPaths from the coords above.
+        let path: IntPath = ipath(vec![
             [10, 10],
             [30, 10],
             [30, 60],
@@ -272,40 +153,23 @@ mod tests {
             [80, 50],
             [60, 100],
             [10, 100],
-        ];
+        ]);
+
+        let mpoly: MPoly = MPoly::new(vec![path]);
 
         // Allocate RGBA 8-bit bitmap 150x150 pixels
-        let w: usize = 150;
-        let h: usize = 150;
-        let mut bitmap = Bitmap::<[u8; 4]>::new(w, h);
+        let mut bitmap = Bitmap::<[u8; 4]>::new(150, 150);
 
         // Plot onto the bitmap with red
         {
-            fill_poly_v2i_n(
-                0, 0, w as i32, h as i32, &coords,
-                &mut |x_start: i32, x_end: i32, y: i32| {
-                    let x_start = max(0, x_start);
-                    let x_end = min(w as i32, x_end);
-                    let y = max(0, min(h as i32 - 1, y));
-                    for x in x_start..x_end {
-                        unsafe {
-                            *bitmap.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
-                        }
+            raster_int_paths(&mut bitmap, &mpoly, |bitmap, x_start, x_end, y| {
+                for x in x_start..x_end {
+                    unsafe {
+                        *bitmap.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
                     }
-                },
-            );
-
+                }
+            });
         }
-
-        // Make a Paths from the coords above
-        let path: IntPath = IntPath::new(
-            coords
-                .iter()
-                .map(|c| p(c[0] as i64, c[1] as i64))
-                .collect(),
-        );
-
-        let mpoly: IntPaths = IntPaths::new(vec![path]);
 
         // Dilation (positive delta). With the hole being CW, it should shrink.
         let dilated = mpoly
@@ -314,88 +178,61 @@ mod tests {
 
         assert!(!dilated.is_empty(), "expected dilated polygon(s)");
 
-        // Convert the dilated result back to rasterizer coords (use the first path).
-        // If you want to rasterize multiple disjoint paths, loop over `0..dilated.len()`.
-        let dilated_coords: Vec<[i32; 2]> = coords_from_path(
-            dilated
-                .first()
-                .expect("dilated unexpectedly had no first path"),
-        );
+        // Plot dilated polygon onto the bitmap by setting only the green channel.
+        {
+            raster_int_paths(&mut bitmap, &dilated, |bitmap, x_start, x_end, y| {
+                // println!("  p[{}, {}, {}],", x_start, x_end, y);
+                for x in x_start..x_end {
+                    unsafe {
+                        (*bitmap.get_unchecked_mut(x as usize, y as usize))[1] = 255;
+                    }
+                }
+            });
+        }
 
-        // Print the dilated coords for debugging
-        // println!("Dilated polygon coords:");
-        // for c in &dilated_coords {
-        //     println!("  [{}, {}],", c[0], c[1]);
-        // }
+        save_rgba_bitmap(&bitmap, "./test_data/_erode_no_hole.png");
+    }
+
+    #[test]
+    fn erode_with_hole() {
+        // Outer square, plus an inset square hole 10 units smaller on each side.
+        // Outer uses CCW winding, hole uses CW winding.
+        let outer: IntPath = ipath(vec![[10, 10], [90, 10], [90, 90], [10, 90]]);
+        let hole0: IntPath = ipath(vec![[20, 20], [20, 40], [40, 40], [40, 20]]);
+        let hole1: IntPath = ipath(vec![[45, 45], [50, 80], [80, 80], [80, 50]]);
+        let mpoly: MPoly = MPoly::new(vec![outer, hole0, hole1]);
+
+        // Allocate RGBA 8-bit bitmap
+        let mut bitmap = Bitmap::<[u8; 4]>::new(120, 120);
+
+        // Plot onto the bitmap with red
+        {
+            raster_int_paths(&mut bitmap, &mpoly, |bitmap, x_start, x_end, y| {
+                for x in x_start..x_end {
+                    unsafe {
+                        *bitmap.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                    }
+                }
+            });
+        }
+
+        // Dilation (positive delta). With the hole being CW, it should shrink.
+        let dilated = mpoly
+            .inflate(-6.0, JoinType::Square, EndType::Polygon, 2.0)
+            .simplify(0.001, false);
 
         // Plot dilated polygon onto the bitmap by setting only the green channel.
         {
-            fill_poly_v2i_n(
-                0, 0, w as i32, h as i32, &dilated_coords,
-                &mut |x_start: i32, x_end: i32, y: i32| {
-                    let x_start = max(0, x_start);
-                    let x_end = min(w as i32, x_end);
-                    let y = max(0, min(h as i32 - 1, y));
-                    println!("  p[{}, {}, {}],", x_start, x_end, y);
-                    for x in x_start..x_end {
-                        unsafe {
-                            (*bitmap.get_unchecked_mut(x as usize, y as usize))[1] = 255;
-                        }
+            raster_int_paths(&mut bitmap, &dilated, |bitmap, x_start, x_end, y| {
+                // println!("  p[{}, {}, {}],", x_start, x_end, y);
+                for x in x_start..x_end {
+                    unsafe {
+                        (*bitmap.get_unchecked_mut(x as usize, y as usize))[1] = 255;
                     }
-                },
-            );
+                }
+            });
         }
 
-        // Save the bitmap to a file for visual inspection
-        let out_path = "./test_data/_poly_draw.png";
-        let mut raw: Vec<u8> = Vec::with_capacity(w * h * 4);
-        for px in &bitmap.arr {
-            raw.extend_from_slice(px);
-        }
-
-        let img =
-            RgbaImage::from_raw(w as u32, h as u32, raw).expect("invalid RGBA image buffer");
-        img.save(out_path)
-            .unwrap_or_else(|e| panic!("failed to save {out_path}: {e}"));
-
-    }
-
-    #[test]
-    fn dilate_square_with_hole() {
-        let multi_poly = make_square_with_hole();
-        assert_eq!(multi_poly.len(), 2);
-
-        let outer = multi_poly.get(0).expect("missing outer path");
-        let hole = multi_poly.get(1).expect("missing hole path");
-        assert!(outer.signed_area() > 0.0, "outer should be CCW");
-        assert!(hole.signed_area() < 0.0, "hole should be CW");
-
-        // Dilation (positive delta). With the hole being CW, it should shrink.
-        let dilated = multi_poly
-            .inflate(1.0, JoinType::Square, EndType::Polygon, 2.0)
-            .simplify(0.001, false);
-
-        assert!(!dilated.is_empty());
-        assert!(dilated.contains_points());
-    }
-
-    #[test]
-    fn erode_outer_and_expand_hole_by_2px() {
-        // Outer: 20x20, hole: 8x8 centered, so erosion by 2px remains non-empty.
-        let outer: IntPath = IntPath::new(vec![p(0, 0), p(20, 0), p(20, 20), p(0, 20)]);
-        let hole: IntPath = IntPath::new(vec![p(3, 3), p(3, 14), p(14, 14), p(14, 3)]);
-        let poly: IntPaths = IntPaths::new(vec![outer, hole]);
-
-        // Negative delta = erosion:
-        // - outer boundary moves inward
-        // - hole boundary moves outward
-        let out = poly
-            .inflate(-2.0, JoinType::Square, EndType::Polygon, 2.0)
-            .simplify(0.001, false);
-
-        assert_eq!(out.len(), 1, "expected 1 polygon after erosion");
-
-        // TODO
-        // Rasterize original (red) + eroded (green, additive) so overlap is yellow.
+        save_rgba_bitmap(&bitmap, "./test_data/_erode_with_hole.png");
     }
 }
