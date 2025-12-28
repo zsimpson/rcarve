@@ -210,64 +210,6 @@ fn fill_poly_v2i_n<F: FnMut(i32, i32, i32)>(
 }
 
 
-fn draw_poly(
-    w: i32, h: i32,
-    coords: &Vec<[i32; 2]>)
-{
-    // Canvas
-    let mut grid = vec![false; (w * h) as usize];
-
-    // Plot onto the canvas
-    {
-        let mut callback = |x_start: i32, x_end: i32, y: i32| {
-            for x in x_start..x_end {
-                if x >= 0 && x < w &&
-                   y >= 0 && y < h
-                {
-                    grid[(x + y * w) as usize] = true;
-                }
-            }
-            return;
-        };
-
-        fill_poly_v2i_n(
-            0, 0, w, h,
-            coords,
-            &mut callback,
-        );
-    }
-
-    // Draw the poly as ASCII art
-    {
-        print!("|");
-        for _ in 0..w {
-            print!("-");
-        }
-        println!("|");
-
-        for y in 0..h {
-            print!("|");
-            for x in 0..w {
-                if grid[(x + y * w) as usize] {
-                    print!("#", );
-                } else {
-                    print!(" ", );
-                }
-            }
-            println!("|");
-        }
-
-        print!("|");
-        for _ in 0..w {
-            print!("-");
-        }
-        println!("|");
-    }
-}
-
-
-
-
 /// Create a 2D multipolygon represented as two paths:
 /// - an outer square perimeter
 /// - an inner square hole (opposite winding)
@@ -302,17 +244,28 @@ pub fn make_square_with_hole() -> IntPaths {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::{max, min};
+
+    use crate::bitmap::Bitmap;
+    use image::RgbaImage;
+
     use super::*;
 
     fn p(x: i64, y: i64) -> IntPoint {
         IntPoint::from_scaled(x, y)
     }
 
+    fn coords_from_path(path: &IntPath) -> Vec<[i32; 2]> {
+        path.iter()
+            .map(|pt| [pt.x_scaled() as i32, pt.y_scaled() as i32])
+            .collect()
+    }
+
     #[test]
     fn draw_poly_from_path() {
         let coords: Vec<[i32; 2]> = vec![
-            [5, 5],
-            [40, 10],
+            [10, 10],
+            [30, 10],
             [30, 60],
             [60, 60],
             [60, 50],
@@ -320,7 +273,91 @@ mod tests {
             [60, 100],
             [10, 100],
         ];
-        draw_poly(100, 100, &coords);
+
+        // Allocate RGBA 8-bit bitmap 150x150 pixels
+        let w: usize = 150;
+        let h: usize = 150;
+        let mut bitmap = Bitmap::<[u8; 4]>::new(w, h);
+
+        // Plot onto the bitmap with red
+        {
+            fill_poly_v2i_n(
+                0, 0, w as i32, h as i32, &coords,
+                &mut |x_start: i32, x_end: i32, y: i32| {
+                    let x_start = max(0, x_start);
+                    let x_end = min(w as i32, x_end);
+                    let y = max(0, min(h as i32 - 1, y));
+                    for x in x_start..x_end {
+                        unsafe {
+                            *bitmap.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                        }
+                    }
+                },
+            );
+
+        }
+
+        // Make a Paths from the coords above
+        let path: IntPath = IntPath::new(
+            coords
+                .iter()
+                .map(|c| p(c[0] as i64, c[1] as i64))
+                .collect(),
+        );
+
+        let mpoly: IntPaths = IntPaths::new(vec![path]);
+
+        // Dilation (positive delta). With the hole being CW, it should shrink.
+        let dilated = mpoly
+            .inflate(-3.0, JoinType::Square, EndType::Polygon, 2.0)
+            .simplify(0.001, false);
+
+        assert!(!dilated.is_empty(), "expected dilated polygon(s)");
+
+        // Convert the dilated result back to rasterizer coords (use the first path).
+        // If you want to rasterize multiple disjoint paths, loop over `0..dilated.len()`.
+        let dilated_coords: Vec<[i32; 2]> = coords_from_path(
+            dilated
+                .first()
+                .expect("dilated unexpectedly had no first path"),
+        );
+
+        // Print the dilated coords for debugging
+        // println!("Dilated polygon coords:");
+        // for c in &dilated_coords {
+        //     println!("  [{}, {}],", c[0], c[1]);
+        // }
+
+        // Plot dilated polygon onto the bitmap by setting only the green channel.
+        {
+            fill_poly_v2i_n(
+                0, 0, w as i32, h as i32, &dilated_coords,
+                &mut |x_start: i32, x_end: i32, y: i32| {
+                    let x_start = max(0, x_start);
+                    let x_end = min(w as i32, x_end);
+                    let y = max(0, min(h as i32 - 1, y));
+                    println!("  p[{}, {}, {}],", x_start, x_end, y);
+                    for x in x_start..x_end {
+                        unsafe {
+                            (*bitmap.get_unchecked_mut(x as usize, y as usize))[1] = 255;
+                        }
+                    }
+                },
+            );
+        }
+
+        // Save the bitmap to a file for visual inspection
+        let out_path = "./test_data/_poly_draw.png";
+        let mut raw: Vec<u8> = Vec::with_capacity(w * h * 4);
+        for px in &bitmap.arr {
+            raw.extend_from_slice(px);
+        }
+
+        let img =
+            RgbaImage::from_raw(w as u32, h as u32, raw).expect("invalid RGBA image buffer");
+        img.save(out_path)
+            .unwrap_or_else(|e| panic!("failed to save {out_path}: {e}"));
+
     }
 
     #[test]
