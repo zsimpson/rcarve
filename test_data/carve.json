@@ -1,0 +1,82 @@
+{
+    "version": 2,
+    "guid": "JGYYJQBHTX",
+    "dim_desc": {
+        "bulk_d_inch": 0.75,
+        "bulk_w_inch": 4,
+        "bulk_h_inch": 4,
+        "padding_inch": 0,
+        "frame_inch": 0.5,
+        "tolerance": 1,
+        "pixels_per_inch": 200
+    },
+    "ply_desc_by_guid": {
+        "HZWKZRTQJV": {
+            "owner_layer_guid": "R7Y9XP4VNB",
+            "guid": "HZWKZRTQJV",
+            "top_thou": 100,
+            "ply_val": 1,
+            "priority": 1,
+            "hidden": false,
+            "is_hole": false,
+            "is_floor": true,
+            "effect_inst_guid": "none",
+            "tolerance": 1.2
+        },
+        "ZWKKED69NS": {
+            "owner_layer_guid": "SU6EKCGPM6",
+            "guid": "ZWKKED69NS",
+            "top_thou": 406,
+            "ply_val": 2,
+            "priority": 1,
+            "hidden": false,
+            "is_hole": false,
+            "is_floor": false,
+            "effect_inst_guid": "none",
+            "tolerance": 1.5
+        },
+        "EUUKYM6QYH": {
+            "owner_layer_guid": "H3VSUR3V61",
+            "guid": "EUUKYM6QYH",
+            "top_thou": 750,
+            "ply_val": 3,
+            "priority": 1,
+            "hidden": false,
+            "is_hole": false,
+            "is_floor": false,
+            "effect_inst_guid": "none",
+            "tolerance": 1.2
+        }
+    },
+    "layer_desc_by_guid": {
+        "R7Y9XP4VNB": {
+            "guid": "R7Y9XP4VNB",
+            "hidden": false,
+            "is_frame": false
+        },
+        "H3VSUR3V61": {
+            "guid": "H3VSUR3V61",
+            "hidden": false,
+            "is_frame": false
+        },
+        "SU6EKCGPM6": {
+            "guid": "SU6EKCGPM6",
+            "hidden": false,
+            "is_frame": false
+        }
+    },
+    "carve_desc": {
+        "grain_y": true,
+        "refine_tool_guid": "W5C7NZWAK4",
+        "rough_tool_guid": "EBES3PGSC3",
+        "detail_margin_thou": 5,
+        "detail_tool_guid": null,
+        "stipple_tool_guid": null,
+        "debug": true,
+        "polish_tool_guid": null,
+        "units": "inch",
+        "hole_fill_threshold_in_tool_areas": 10
+    },
+    "effect_inst_by_guid": {},
+    "is_staging": false
+}

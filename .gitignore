@@ -1,0 +1,31 @@
+##########
+# Rust
+##########
+/target/
+**/*.rs.bk
+
+
+##########
+# OS junk
+##########
+.DS_Store
+.AppleDouble
+.LSOverride
+
+##########
+# Editors / IDEs
+##########
+.idea/
+*.iml
+
+##########
+# Misc
+##########
+.env
+
+##########
+# Project-specific generated outputs
+##########
+**/_*.png
+**/_*.json
+

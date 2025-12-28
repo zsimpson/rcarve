@@ -1,0 +1,37 @@
+[
+    {
+        "guid": "EBES3PGSC3",
+        "units": "inch",
+        "kind": "endmill",
+        "diameter": 0.25,
+        "length": 0.5
+    },
+    {
+        "guid": "W5C7NZWAK4",
+        "units": "inch",
+        "kind": "endmill",
+        "diameter": 0.125,
+        "length": 0.25
+    },
+    {
+        "guid": "BZ76A81UGA",
+        "units": "inch",
+        "kind": "endmill",
+        "diameter": 0.063,
+        "length": 0.125
+    },
+    {
+        "guid": "F2BRR528DN",
+        "units": "inch",
+        "kind": "vcarve",
+        "diameter": 0.25,
+        "length": 0.5
+    },
+    {
+        "guid": "XSMVG2PJ6W",
+        "units": "inch",
+        "kind": "vcarve",
+        "diameter": 0.125,
+        "length": 0.25
+    }
+]
