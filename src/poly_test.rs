@@ -1,4 +1,4 @@
-use crate::bitmap::Bitmap;
+use crate::im::Im;
 use clipper2::{EndType, JoinType, One, Path, Paths, Point};
 type IntPoint = Point<One>;
 type IntPath = Path<One>;
@@ -92,8 +92,8 @@ fn coords_from_path(path: &IntPath) -> Vec<[i32; 2]> {
         .collect()
 }
 
-pub fn raster_int_paths<T: Copy + Default, F: FnMut(&mut Bitmap<T>, i32, i32, i32)>(
-    bitmap: &mut Bitmap<T>,
+pub fn raster_int_paths<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32, i32)>(
+    im: &mut Im<T>,
     int_paths: &MPoly,
     mut callback: F,
 ) {
@@ -101,10 +101,10 @@ pub fn raster_int_paths<T: Copy + Default, F: FnMut(&mut Bitmap<T>, i32, i32, i3
     fill_poly_v2i_n(
         0,
         0,
-        bitmap.w as i32,
-        bitmap.h as i32,
+        im.w as i32,
+        im.h as i32,
         &rings,
-        &mut |x_start: i32, x_end: i32, y: i32| callback(bitmap, x_start, x_end, y),
+        &mut |x_start: i32, x_end: i32, y: i32| callback(im, x_start, x_end, y),
     );
 }
 
@@ -127,12 +127,12 @@ mod tests {
         )
     }
 
-    fn save_rgba_bitmap(bitmap: &Bitmap<[u8; 4]>, out_path: &str) {
-        let w = bitmap.w;
-        let h = bitmap.h;
+    fn save_rgba_im(im: &Im<[u8; 4]>, out_path: &str) {
+        let w = im.w;
+        let h = im.h;
 
         let mut raw: Vec<u8> = Vec::with_capacity(w * h * 4);
-        for px in &bitmap.arr {
+        for px in &im.arr {
             raw.extend_from_slice(px);
         }
 
@@ -157,15 +157,15 @@ mod tests {
 
         let mpoly: MPoly = MPoly::new(vec![path]);
 
-        // Allocate RGBA 8-bit bitmap 150x150 pixels
-        let mut bitmap = Bitmap::<[u8; 4]>::new(150, 150);
+        // Allocate RGBA 8-bit im 150x150 pixels
+        let mut im = Im::<[u8; 4]>::new(150, 150);
 
-        // Plot onto the bitmap with red
+        // Plot onto the im with red
         {
-            raster_int_paths(&mut bitmap, &mpoly, |bitmap, x_start, x_end, y| {
+            raster_int_paths(&mut im, &mpoly, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *bitmap.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                        *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
                     }
                 }
             });
@@ -178,19 +178,19 @@ mod tests {
 
         assert!(!dilated.is_empty(), "expected dilated polygon(s)");
 
-        // Plot dilated polygon onto the bitmap by setting only the green channel.
+        // Plot dilated polygon onto the im by setting only the green channel.
         {
-            raster_int_paths(&mut bitmap, &dilated, |bitmap, x_start, x_end, y| {
+            raster_int_paths(&mut im, &dilated, |im, x_start, x_end, y| {
                 // println!("  p[{}, {}, {}],", x_start, x_end, y);
                 for x in x_start..x_end {
                     unsafe {
-                        (*bitmap.get_unchecked_mut(x as usize, y as usize))[1] = 255;
+                        (*im.get_unchecked_mut(x as usize, y as usize))[1] = 255;
                     }
                 }
             });
         }
 
-        save_rgba_bitmap(&bitmap, "./test_data/_erode_no_hole.png");
+        save_rgba_im(&im, "./test_data/_erode_no_hole.png");
     }
 
     #[test]
@@ -202,15 +202,15 @@ mod tests {
         let hole1: IntPath = ipath(vec![[45, 45], [50, 80], [80, 80], [80, 50]]);
         let mpoly: MPoly = MPoly::new(vec![outer, hole0, hole1]);
 
-        // Allocate RGBA 8-bit bitmap
-        let mut bitmap = Bitmap::<[u8; 4]>::new(120, 120);
+        // Allocate RGBA 8-bit im
+        let mut im = Im::<[u8; 4]>::new(120, 120);
 
-        // Plot onto the bitmap with red
+        // Plot onto the im with red
         {
-            raster_int_paths(&mut bitmap, &mpoly, |bitmap, x_start, x_end, y| {
+            raster_int_paths(&mut im, &mpoly, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *bitmap.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                        *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
                     }
                 }
             });
@@ -221,18 +221,18 @@ mod tests {
             .inflate(-6.0, JoinType::Square, EndType::Polygon, 2.0)
             .simplify(0.001, false);
 
-        // Plot dilated polygon onto the bitmap by setting only the green channel.
+        // Plot dilated polygon onto the im by setting only the green channel.
         {
-            raster_int_paths(&mut bitmap, &dilated, |bitmap, x_start, x_end, y| {
+            raster_int_paths(&mut im, &dilated, |im, x_start, x_end, y| {
                 // println!("  p[{}, {}, {}],", x_start, x_end, y);
                 for x in x_start..x_end {
                     unsafe {
-                        (*bitmap.get_unchecked_mut(x as usize, y as usize))[1] = 255;
+                        (*im.get_unchecked_mut(x as usize, y as usize))[1] = 255;
                     }
                 }
             });
         }
 
-        save_rgba_bitmap(&bitmap, "./test_data/_erode_with_hole.png");
+        save_rgba_im(&im, "./test_data/_erode_with_hole.png");
     }
 }

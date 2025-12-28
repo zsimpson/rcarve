@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-mod bitmap;
+mod im;
 
 #[cfg(test)]
 mod poly_test;

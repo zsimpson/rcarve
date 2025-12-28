@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 
 #[derive(Debug, Clone)]
-pub struct Bitmap<T> {
+pub struct Im<T> {
     pub w: usize,
     pub h: usize,
     pub s: usize, // stride: elements per row
     pub arr: Vec<T>,
 }
 
-impl<T: Copy + Default> Bitmap<T> {
+impl<T: Copy + Default> Im<T> {
     pub fn new(w: usize, h: usize) -> Self {
         let s = w;
         let arr = vec![T::default(); s * h];
@@ -16,7 +16,7 @@ impl<T: Copy + Default> Bitmap<T> {
     }
 }
 
-impl<T> Bitmap<T> {
+impl<T> Im<T> {
     #[inline(always)]
     pub unsafe fn get_unchecked(&self, x: usize, y: usize) -> &T {
         unsafe { self.arr.get_unchecked(y * self.s + x) }
