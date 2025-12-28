@@ -1,6 +1,14 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+mod bitmap;
+
+#[cfg(test)]
+mod poly_test;
+
+
+
+
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
