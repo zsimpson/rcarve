@@ -92,12 +92,12 @@ fn coords_from_path(path: &IntPath) -> Vec<[i32; 2]> {
         .collect()
 }
 
-pub fn raster_int_paths<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32, i32)>(
+pub fn raster_mpoly<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32, i32)>(
     im: &mut Im<T>,
-    int_paths: &MPoly,
+    mpoly: &MPoly,
     mut callback: F,
 ) {
-    let rings: Vec<Vec<[i32; 2]>> = int_paths.iter().map(coords_from_path).collect();
+    let rings: Vec<Vec<[i32; 2]>> = mpoly.iter().map(coords_from_path).collect();
     fill_poly_v2i_n(
         0,
         0,
@@ -108,8 +108,57 @@ pub fn raster_int_paths<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32, i32)>(
     );
 }
 
+pub fn raster_mpoly_edges<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32)>(
+    im: &mut Im<T>,
+    mpoly: &MPoly,
+    mut callback: F,
+) {
+    for path in mpoly.iter() {
+        let coords = coords_from_path(path);
+        let n = coords.len();
+        if n < 2 {
+            continue;
+        }
+
+        for i in 0..n {
+            let p0 = coords[i];
+            let p1 = coords[(i + 1) % n];
+
+            // Bresenham's line algorithm
+            let dx = (p1[0] - p0[0]).abs();
+            let dy = -(p1[1] - p0[1]).abs();
+            let sx = if p0[0] < p1[0] { 1 } else { -1 };
+            let sy = if p0[1] < p1[1] { 1 } else { -1 };
+            let mut err = dx + dy;
+            let mut x = p0[0];
+            let mut y = p0[1];
+
+            loop {
+                if x >= 0 && x < im.w as i32 && y >= 0 && y < im.h as i32 {
+                    callback(im, x, y);
+                }
+                if x == p1[0] && y == p1[1] {
+                    break;
+                }
+                let e2 = 2 * err;
+                if e2 >= dy {
+                    err += dy;
+                    x += sx;
+                }
+                if e2 <= dx {
+                    err += dx;
+                    y += sy;
+                }
+            }
+        }
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::TAU;
+
     use image::RgbaImage;
 
     use super::*;
@@ -125,6 +174,23 @@ mod tests {
                 .map(|c| p(c[0] as i64, c[1] as i64))
                 .collect(),
         )
+    }
+
+    #[allow(dead_code)]
+    fn circle_coords(n: usize, cx: f64, cy: f64, r: f64) -> Vec<[i32; 2]> {
+        assert!(n >= 3, "circle needs at least 3 vertices");
+        assert!(r.is_finite() && r > 0.0, "radius must be finite and > 0");
+        assert!(cx.is_finite() && cy.is_finite(), "center must be finite");
+
+        let step = TAU / (n as f64);
+        (0..n)
+            .map(|i| {
+                let a = (i as f64) * step;
+                let x = cx + r * a.cos();
+                let y = cy + r * a.sin();
+                [x.round() as i32, y.round() as i32]
+            })
+            .collect()
     }
 
     fn save_rgba_im(im: &Im<[u8; 4]>, out_path: &str) {
@@ -162,7 +228,7 @@ mod tests {
 
         // Plot onto the im with red
         {
-            raster_int_paths(&mut im, &mpoly, |im, x_start, x_end, y| {
+            raster_mpoly(&mut im, &mpoly, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
                         *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
@@ -180,7 +246,7 @@ mod tests {
 
         // Plot dilated polygon onto the im by setting only the green channel.
         {
-            raster_int_paths(&mut im, &dilated, |im, x_start, x_end, y| {
+            raster_mpoly(&mut im, &dilated, |im, x_start, x_end, y| {
                 // println!("  p[{}, {}, {}],", x_start, x_end, y);
                 for x in x_start..x_end {
                     unsafe {
@@ -207,7 +273,7 @@ mod tests {
 
         // Plot onto the im with red
         {
-            raster_int_paths(&mut im, &mpoly, |im, x_start, x_end, y| {
+            raster_mpoly(&mut im, &mpoly, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
                         *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
@@ -223,7 +289,7 @@ mod tests {
 
         // Plot dilated polygon onto the im by setting only the green channel.
         {
-            raster_int_paths(&mut im, &dilated, |im, x_start, x_end, y| {
+            raster_mpoly(&mut im, &dilated, |im, x_start, x_end, y| {
                 // println!("  p[{}, {}, {}],", x_start, x_end, y);
                 for x in x_start..x_end {
                     unsafe {
@@ -234,5 +300,32 @@ mod tests {
         }
 
         save_rgba_im(&im, "./test_data/_erode_with_hole.png");
+    }
+
+    #[test]
+    fn erode_small_hole() {
+        let verts = circle_coords(16, 20.0, 20.0, 10.0);
+        let mpoly: MPoly = MPoly::new(vec![ipath(verts)]);
+
+        // Allocate RGBA 8-bit im
+        let mut im = Im::<[u8; 4]>::new(120, 120);
+        raster_mpoly_edges(&mut im, &mpoly, |im, x, y| {
+            unsafe {
+                *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+            }
+        });
+
+        let eroded = mpoly
+            .inflate(-6.0, JoinType::Round, EndType::Polygon, 2.0)
+            .simplify(0.001, false);
+
+        assert!(!eroded.is_empty());
+
+        // Test that eroding more than the radius removes the polygon.
+        let eroded = mpoly
+            .inflate(-12.0, JoinType::Round, EndType::Polygon, 2.0)
+            .simplify(0.001, false);
+
+        assert!(eroded.is_empty());
     }
 }
