@@ -8,11 +8,56 @@
 					"column": 0
 				},
 				{
-					"line": 117,
-					"column": 59
+					"line": -1,
+					"column": 0
 				},
 				{
 					"line": 65,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				}
+			]
+		},
+		{
+			"path": "src/trace.rs",
+			"bookmarks": [
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": 866,
+					"column": 8
+				},
+				{
+					"line": -1,
 					"column": 0
 				},
 				{
