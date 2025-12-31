@@ -29,6 +29,7 @@ type SepIm = Im<SepVal, 1>;
 
 pub struct Band {
     // pub band_desc: &BandDesc,
+    pub which: String,
     pub top_thou: Thou,
     pub bot_thou: Thou,
     pub thous_top_to_bot: Vec<Thou>,
@@ -64,6 +65,7 @@ pub fn create_bands(
     let mut bands: Vec<Band> = band_descs
         .iter()
         .map(|bd| Band {
+            which: bd.which.clone(),
             top_thou: bd.top_thou as Thou,
             bot_thou: bd.bot_thou as Thou,
             thous_top_to_bot: Vec::new(),
@@ -87,20 +89,20 @@ pub fn create_bands(
             .get(&sep_val)
             .unwrap_or_else(|| panic!("missing sep_to_thou entry for sep label {sep_val}"));
 
-        // Assign this labeled component into the first matching band (top inclusive, bot exclusive).
-        let mut assigned = false;
+        // Assign this labeled component into every matching band (top inclusive, bot exclusive).
+        // Bands may overlap (e.g. per-tool bands with the same range), so don't stop at the first.
+        let mut assigned_any = false;
         for band in bands.iter_mut() {
             let band_top = band.top_thou.max(band.bot_thou);
             let band_bot = band.top_thou.min(band.bot_thou);
             if band_bot < thou && thou <= band_top {
                 band.label_ids.push(label_id);
                 band.thous_top_to_bot.push(thou);
-                assigned = true;
-                break;
+                assigned_any = true;
             }
         }
 
-        if !assigned {
+        if !assigned_any {
             panic!("label {label_id} (sep_val={sep_val}, thou={thou}) did not fit any band");
         }
     }
@@ -123,16 +125,20 @@ mod tests {
     use super::*;
     use crate::im::label_im;
 
-    fn rough_band_desc(top_thou: i32, bot_thou: i32) -> BandDesc {
+    fn band_desc(top_thou: i32, bot_thou: i32, which: &str) -> BandDesc {
         BandDesc {
             top_thou,
             bot_thou,
-            mode: "rough".to_string(),
+            which: which.to_string(),
         }
     }
 
-    fn rough_two_bands() -> Vec<BandDesc> {
-        vec![rough_band_desc(1000, 750), rough_band_desc(750, 500)]
+    fn refine_plus_rough_three_bands() -> Vec<BandDesc> {
+        vec![
+            band_desc(1000, 750, "refine"),
+            band_desc(750, 500, "refine"),
+            band_desc(1000, 500, "rough"),
+        ]
     }
 
     fn make_sep_im_equal_divisions(dim: usize, divisions: u16) -> SepIm {
@@ -181,7 +187,7 @@ mod tests {
 
         let sep_im = make_sep_im_equal_divisions(DIM, 2);
 
-        let band_descs = rough_two_bands();
+        let band_descs = refine_plus_rough_three_bands();
 
         let sep_to_thou: HashMap<LabelVal, Thou> = HashMap::from([(1, 900), (2, 800)]);
 
@@ -189,19 +195,28 @@ mod tests {
 
         let bands = create_bands(&sep_im, &sep_to_thou, &band_descs, &label_infos);
 
-        assert_eq!(bands.len(), 2);
+        assert_eq!(bands.len(), 3);
 
-        // Both regions map into the first band (750 < thou <= 1000).
+        // Refine band #1 gets both regions (750 < thou <= 1000).
+        assert_eq!(bands[0].which, "refine");
         assert_eq!(bands[0].top_thou, 1000);
         assert_eq!(bands[0].bot_thou, 750);
         assert_eq!(bands[0].label_ids, vec![1, 2]);
         assert_eq!(bands[0].thous_top_to_bot, vec![900, 800]);
 
-        // Second band ends up empty for this mapping.
+        // Refine band #2 ends up empty for this mapping.
+        assert_eq!(bands[1].which, "refine");
         assert_eq!(bands[1].top_thou, 750);
         assert_eq!(bands[1].bot_thou, 500);
         assert!(bands[1].label_ids.is_empty());
         assert!(bands[1].thous_top_to_bot.is_empty());
+
+        // Rough band overlaps both refine bands, so it should include everything.
+        assert_eq!(bands[2].which, "rough");
+        assert_eq!(bands[2].top_thou, 1000);
+        assert_eq!(bands[2].bot_thou, 500);
+        assert_eq!(bands[2].label_ids, vec![1, 2]);
+        assert_eq!(bands[2].thous_top_to_bot, vec![900, 800]);
     }
 
     #[test]
@@ -210,24 +225,32 @@ mod tests {
 
         let sep_im = make_sep_im_equal_divisions(DIM, 3);
 
-        let band_descs = rough_two_bands();
+        let band_descs = refine_plus_rough_three_bands();
 
         let sep_to_thou: HashMap<LabelVal, Thou> = HashMap::from([(1, 900), (2, 800), (3, 700)]);
 
         let (_label_id_im, label_infos): (SepIm, Vec<LabelInfo>) = label_im(&sep_im);
 
         let bands = create_bands(&sep_im, &sep_to_thou, &band_descs, &label_infos);
-        assert_eq!(bands.len(), 2);
+        assert_eq!(bands.len(), 3);
 
+        assert_eq!(bands[0].which, "refine");
         assert_eq!(bands[0].top_thou, 1000);
         assert_eq!(bands[0].bot_thou, 750);
         assert_eq!(bands[0].label_ids, vec![1, 2]);
         assert_eq!(bands[0].thous_top_to_bot, vec![900, 800]);
 
+        assert_eq!(bands[1].which, "refine");
         assert_eq!(bands[1].top_thou, 750);
         assert_eq!(bands[1].bot_thou, 500);
         assert_eq!(bands[1].label_ids, vec![3]);
         assert_eq!(bands[1].thous_top_to_bot, vec![700]);
+
+        assert_eq!(bands[2].which, "rough");
+        assert_eq!(bands[2].top_thou, 1000);
+        assert_eq!(bands[2].bot_thou, 500);
+        assert_eq!(bands[2].label_ids, vec![1, 2, 3]);
+        assert_eq!(bands[2].thous_top_to_bot, vec![900, 800, 700]);
     }
 }
 

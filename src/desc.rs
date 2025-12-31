@@ -1,132 +1,241 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct CarveJson {
-    version: u32,
-    guid: String,
-    dim_desc: DimDesc,
-    ply_desc_by_guid: HashMap<String, PlyDesc>,
-    layer_desc_by_guid: HashMap<String, LayerDesc>,
-    carve_desc: CarveDesc,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(transparent)]
+pub struct Guid(pub String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Units {
+    Inch,
+    Mm,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompDesc {
+    pub version: u32,
+    pub guid: Guid,
+    pub dim_desc: DimDesc,
+    pub ply_desc_by_guid: HashMap<Guid, PlyDesc>,
+    pub layer_desc_by_guid: HashMap<Guid, LayerDesc>,
+    pub carve_desc: CarveDesc,
     #[serde(default)]
-    effect_inst_by_guid: HashMap<String, serde_json::Value>,
-    is_staging: bool,
+    pub bands: Vec<BandDesc>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-struct DimDesc {
-    bulk_d_inch: f64,
-    bulk_w_inch: f64,
-    bulk_h_inch: f64,
-    padding_inch: f64,
-    frame_inch: f64,
-    tolerance: f64,
-    pixels_per_inch: u32,
+pub struct DimDesc {
+    pub bulk_d_inch: f64,
+    pub bulk_w_inch: f64,
+    pub bulk_h_inch: f64,
+    pub padding_inch: f64,
+    pub frame_inch: f64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-struct PlyDesc {
-    owner_layer_guid: String,
-    guid: String,
-    top_thou: i64,
-    ply_val: i64,
-    // priority: i64,
-    hidden: bool,
-    // is_hole: bool,
-    is_floor: bool,
-    effect_inst_guid: String,
-    tolerance: f64,
+pub struct PlyDesc {
+    pub owner_layer_guid: Guid,
+    pub guid: Guid,
+    pub top_thou: i32,
+    pub hidden: bool,
+    pub is_floor: bool,
+    #[serde(default)]
+    pub mpoly: Vec<PolyDesc>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-struct LayerDesc {
-    guid: String,
-    hidden: bool,
-    is_frame: bool,
+pub type FlatVerts = Vec<i32>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PolyDesc {
+    pub exterior: FlatVerts,
+    #[serde(default)]
+    pub holes: Vec<FlatVerts>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-struct CarveDesc {
-    grain_y: bool,
-    refine_tool_guid: String,
-    rough_tool_guid: String,
-    detail_margin_thou: i64,
-    detail_tool_guid: Option<String>,
-    stipple_tool_guid: Option<String>,
-    debug: bool,
-    polish_tool_guid: Option<String>,
-    units: String,
-    hole_fill_threshold_in_tool_areas: i64,
+pub struct LayerDesc {
+    pub guid: Guid,
+    pub hidden: bool,
+    pub is_frame: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
+pub struct CarveDesc {
+    pub grain_y: bool,
+    pub rough_tool_guid: Guid,
+    pub refine_tool_guid: Guid,
+    pub detail_tool_guid: Option<Guid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BandDesc {
     pub top_thou: i32,
     pub bot_thou: i32,
-    pub mode: String,
+    pub which: String,
 }
 
-// fn test_json() {
-//     // Open ./test_data/carve.json. Here's an example
-//     // I might contain other keys that we want to ignore for now
+pub fn parse_comp_json(json_text: &str) -> Result<CompDesc, serde_json::Error> {
+    serde_json::from_str(json_text)
+}
 
-//     let json_text = std::fs::read_to_string("./test_data/carve.json")
-//         .unwrap_or_else(|e| panic!("failed to read carve.json: {e}"));
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     let carve: CarveJson =
-//         serde_json::from_str(&json_text).unwrap_or_else(|e| panic!("invalid carve.json: {e}"));
+    #[test]
+    fn comp_desc_deserializes_sample_json() {
+        let sample = r#"
+        {
+            "version": 2,
+            "guid": "JGYYJQBHTX",
+            "dim_desc": {
+                "bulk_d_inch": 0.75,
+                "bulk_w_inch": 4,
+                "bulk_h_inch": 4,
+                "padding_inch": 0,
+                "frame_inch": 0.5,
+                "tolerance": 1,
+                "pixels_per_inch": 200
+            },
+            "ply_desc_by_guid": {
+                "HZWKZRTQJV": {
+                    "owner_layer_guid": "R7Y9XP4VNB",
+                    "guid": "HZWKZRTQJV",
+                    "top_thou": 100,
+                    "mpoly": [
+                        {
+                            "exterior": [0,0, 10,0, 10,10, 0,10],
+                            "holes": [
+                                [2,2, 8,2, 8,8, 2,8]
+                            ]
+                        }
+                    ],
+                    "ply_val": 1,
+                    "priority": 1,
+                    "hidden": false,
+                    "is_hole": false,
+                    "is_floor": true,
+                    "effect_inst_guid": "none",
+                    "tolerance": 1.2
+                },
+                "ZWKKED69NS": {
+                    "owner_layer_guid": "SU6EKCGPM6",
+                    "guid": "ZWKKED69NS",
+                    "top_thou": 406,
+                    "ply_val": 2,
+                    "priority": 1,
+                    "hidden": false,
+                    "is_hole": false,
+                    "is_floor": false,
+                    "effect_inst_guid": "none",
+                    "tolerance": 1.5
+                },
+                "EUUKYM6QYH": {
+                    "owner_layer_guid": "H3VSUR3V61",
+                    "guid": "EUUKYM6QYH",
+                    "top_thou": 750,
+                    "ply_val": 3,
+                    "priority": 1,
+                    "hidden": false,
+                    "is_hole": false,
+                    "is_floor": false,
+                    "effect_inst_guid": "none",
+                    "tolerance": 1.2
+                }
+            },
+            "layer_desc_by_guid": {
+                "R7Y9XP4VNB": {
+                    "guid": "R7Y9XP4VNB",
+                    "hidden": false,
+                    "is_frame": false
+                },
+                "H3VSUR3V61": {
+                    "guid": "H3VSUR3V61",
+                    "hidden": false,
+                    "is_frame": false
+                },
+                "SU6EKCGPM6": {
+                    "guid": "SU6EKCGPM6",
+                    "hidden": false,
+                    "is_frame": false
+                }
+            },
+            "carve_desc": {
+                "grain_y": true,
+                "refine_tool_guid": "W5C7NZWAK4",
+                "rough_tool_guid": "EBES3PGSC3",
+                "detail_margin_thou": 5,
+                "detail_tool_guid": null,
+                "stipple_tool_guid": null,
+                "debug": true,
+                "polish_tool_guid": null,
+                "units": "inch",
+                "hole_fill_threshold_in_tool_areas": 10
+            },
+            "bands": [
+                {
+                    "top_thou": 1000,
+                    "bot_thou": 900,
+                    "which": "refine"
+                },
+                {
+                    "top_thou": 900,
+                    "bot_thou": 800,
+                    "which": "refine"
+                },
+                {
+                    "top_thou": 1000,
+                    "bot_thou": 200,
+                    "which": "rough"
+                }
+            ]
+        }
+        "#;
 
-//     assert_eq!(carve.version, 2);
-//     assert_eq!(carve.guid, "JGYYJQBHTX");
+        let comp: CompDesc = parse_comp_json(sample).expect("sample json should deserialize");
 
-//     assert_eq!(carve.dim_desc.pixels_per_inch, 200);
-//     assert!((carve.dim_desc.bulk_d_inch - 0.75).abs() < 1e-9);
-//     assert!((carve.dim_desc.frame_inch - 0.5).abs() < 1e-9);
+        assert_eq!(comp.version, 2);
+        assert_eq!(comp.guid, Guid("JGYYJQBHTX".to_string()));
+        assert!(comp.carve_desc.detail_tool_guid.is_none());
+        assert_eq!(comp.ply_desc_by_guid.len(), 3);
 
-//     assert_eq!(carve.ply_desc_by_guid.len(), 3);
-//     let ply1 = carve
-//         .ply_desc_by_guid
-//         .get("HZWKZRTQJV")
-//         .expect("missing ply HZWKZRTQJV");
-//     assert_eq!(ply1.ply_val, 1);
-//     assert_eq!(ply1.top_thou, 100);
-//     assert!(ply1.is_floor);
-//     assert!(!ply1.hidden);
-//     assert_eq!(ply1.effect_inst_guid, "none");
+        assert_eq!(comp.bands.len(), 3);
+        assert_eq!(
+            comp.bands,
+            vec![
+                BandDesc {
+                    top_thou: 1000,
+                    bot_thou: 900,
+                    which: "refine".to_string(),
+                },
+                BandDesc {
+                    top_thou: 900,
+                    bot_thou: 800,
+                    which: "refine".to_string(),
+                },
+                BandDesc {
+                    top_thou: 1000,
+                    bot_thou: 200,
+                    which: "rough".to_string(),
+                }
+            ]
+        );
 
-//     assert_eq!(carve.layer_desc_by_guid.len(), 3);
-//     let layer = carve
-//         .layer_desc_by_guid
-//         .get("R7Y9XP4VNB")
-//         .expect("missing layer R7Y9XP4VNB");
-//     assert_eq!(layer.guid, "R7Y9XP4VNB");
-//     assert!(!layer.hidden);
-//     assert!(!layer.is_frame);
+        let ply = comp
+            .ply_desc_by_guid
+            .get(&Guid("HZWKZRTQJV".to_string()))
+            .expect("ply HZWKZRTQJV should exist");
+        assert_eq!(ply.top_thou, 100);
+        assert!(ply.is_floor);
 
-//     assert_eq!(carve.carve_desc.units, "inch");
-//     assert!(carve.carve_desc.debug);
-//     assert_eq!(carve.carve_desc.detail_margin_thou, 5);
-//     assert!(carve.carve_desc.detail_tool_guid.is_none());
-//     assert!(carve.carve_desc.stipple_tool_guid.is_none());
-//     assert!(carve.carve_desc.polish_tool_guid.is_none());
+        assert_eq!(ply.mpoly.len(), 1);
+        assert_eq!(ply.mpoly[0].exterior.len(), 8);
+        assert_eq!(ply.mpoly[0].holes.len(), 1);
+        assert_eq!(ply.mpoly[0].holes[0].len(), 8);
 
-//     assert!(carve.effect_inst_by_guid.is_empty());
-//     assert!(!carve.is_staging);
-
-//     println!(
-//         "Parsed carve.json ok: version={}, guid={}, plies={}, layers={}",
-//         carve.version,
-//         carve.guid,
-//         carve.ply_desc_by_guid.len(),
-//         carve.layer_desc_by_guid.len()
-//     );
-
-// }
+        assert!(comp
+            .layer_desc_by_guid
+            .contains_key(&Guid("R7Y9XP4VNB".to_string())));
+    }
+}

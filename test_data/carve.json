@@ -78,5 +78,5 @@
         "hole_fill_threshold_in_tool_areas": 10
     },
     "effect_inst_by_guid": {},
-    "is_staging": false
+    "is_staging": false,
 }
