@@ -74,59 +74,59 @@ pub struct BandDesc {
     pub mode: String,
 }
 
-fn test_json() {
-    // Open ./test_data/carve.json. Here's an example
-    // I might contain other keys that we want to ignore for now
+// fn test_json() {
+//     // Open ./test_data/carve.json. Here's an example
+//     // I might contain other keys that we want to ignore for now
 
-    let json_text = std::fs::read_to_string("./test_data/carve.json")
-        .unwrap_or_else(|e| panic!("failed to read carve.json: {e}"));
+//     let json_text = std::fs::read_to_string("./test_data/carve.json")
+//         .unwrap_or_else(|e| panic!("failed to read carve.json: {e}"));
 
-    let carve: CarveJson =
-        serde_json::from_str(&json_text).unwrap_or_else(|e| panic!("invalid carve.json: {e}"));
+//     let carve: CarveJson =
+//         serde_json::from_str(&json_text).unwrap_or_else(|e| panic!("invalid carve.json: {e}"));
 
-    assert_eq!(carve.version, 2);
-    assert_eq!(carve.guid, "JGYYJQBHTX");
+//     assert_eq!(carve.version, 2);
+//     assert_eq!(carve.guid, "JGYYJQBHTX");
 
-    assert_eq!(carve.dim_desc.pixels_per_inch, 200);
-    assert!((carve.dim_desc.bulk_d_inch - 0.75).abs() < 1e-9);
-    assert!((carve.dim_desc.frame_inch - 0.5).abs() < 1e-9);
+//     assert_eq!(carve.dim_desc.pixels_per_inch, 200);
+//     assert!((carve.dim_desc.bulk_d_inch - 0.75).abs() < 1e-9);
+//     assert!((carve.dim_desc.frame_inch - 0.5).abs() < 1e-9);
 
-    assert_eq!(carve.ply_desc_by_guid.len(), 3);
-    let ply1 = carve
-        .ply_desc_by_guid
-        .get("HZWKZRTQJV")
-        .expect("missing ply HZWKZRTQJV");
-    assert_eq!(ply1.ply_val, 1);
-    assert_eq!(ply1.top_thou, 100);
-    assert!(ply1.is_floor);
-    assert!(!ply1.hidden);
-    assert_eq!(ply1.effect_inst_guid, "none");
+//     assert_eq!(carve.ply_desc_by_guid.len(), 3);
+//     let ply1 = carve
+//         .ply_desc_by_guid
+//         .get("HZWKZRTQJV")
+//         .expect("missing ply HZWKZRTQJV");
+//     assert_eq!(ply1.ply_val, 1);
+//     assert_eq!(ply1.top_thou, 100);
+//     assert!(ply1.is_floor);
+//     assert!(!ply1.hidden);
+//     assert_eq!(ply1.effect_inst_guid, "none");
 
-    assert_eq!(carve.layer_desc_by_guid.len(), 3);
-    let layer = carve
-        .layer_desc_by_guid
-        .get("R7Y9XP4VNB")
-        .expect("missing layer R7Y9XP4VNB");
-    assert_eq!(layer.guid, "R7Y9XP4VNB");
-    assert!(!layer.hidden);
-    assert!(!layer.is_frame);
+//     assert_eq!(carve.layer_desc_by_guid.len(), 3);
+//     let layer = carve
+//         .layer_desc_by_guid
+//         .get("R7Y9XP4VNB")
+//         .expect("missing layer R7Y9XP4VNB");
+//     assert_eq!(layer.guid, "R7Y9XP4VNB");
+//     assert!(!layer.hidden);
+//     assert!(!layer.is_frame);
 
-    assert_eq!(carve.carve_desc.units, "inch");
-    assert!(carve.carve_desc.debug);
-    assert_eq!(carve.carve_desc.detail_margin_thou, 5);
-    assert!(carve.carve_desc.detail_tool_guid.is_none());
-    assert!(carve.carve_desc.stipple_tool_guid.is_none());
-    assert!(carve.carve_desc.polish_tool_guid.is_none());
+//     assert_eq!(carve.carve_desc.units, "inch");
+//     assert!(carve.carve_desc.debug);
+//     assert_eq!(carve.carve_desc.detail_margin_thou, 5);
+//     assert!(carve.carve_desc.detail_tool_guid.is_none());
+//     assert!(carve.carve_desc.stipple_tool_guid.is_none());
+//     assert!(carve.carve_desc.polish_tool_guid.is_none());
 
-    assert!(carve.effect_inst_by_guid.is_empty());
-    assert!(!carve.is_staging);
+//     assert!(carve.effect_inst_by_guid.is_empty());
+//     assert!(!carve.is_staging);
 
-    println!(
-        "Parsed carve.json ok: version={}, guid={}, plies={}, layers={}",
-        carve.version,
-        carve.guid,
-        carve.ply_desc_by_guid.len(),
-        carve.layer_desc_by_guid.len()
-    );
+//     println!(
+//         "Parsed carve.json ok: version={}, guid={}, plies={}, layers={}",
+//         carve.version,
+//         carve.guid,
+//         carve.ply_desc_by_guid.len(),
+//         carve.layer_desc_by_guid.len()
+//     );
 
-}
+// }

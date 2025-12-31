@@ -1,21 +1,23 @@
 use crate::desc::BandDesc;
-use crate::im::{label_im, Im};
+use crate::im::Im;
 use crate::im::LabelInfo;
 
 use std::collections::HashMap;
 
 type Thou = i32; // in thousandths of an inch
 
-type LabelId = u16;
-type SepVal = u16;
-type SepIm = Im<SepVal>;
+type LabelVal = u16;
+type LabelIm = Im<LabelVal, 1>;
 
-pub struct ROI {
-    pub x: usize,
-    pub y: usize,
-    pub w: usize,
-    pub h: usize,
-}
+type SepVal = u16;
+type SepIm = Im<SepVal, 1>;
+
+// pub struct ROI {
+//     pub x: usize,
+//     pub y: usize,
+//     pub w: usize,
+//     pub h: usize,
+// }
 
 // There's different band struct for different tools / operations!
 // I'll continue to assume tht these will be made by the client side
@@ -23,14 +25,14 @@ pub struct ROI {
 
 // But that means that for a given operaiton (rough, etc) that I need
 // to allocate a Band struct for each band and populate it wil the right data
-// So that's a function 
+// So that's a function
 
 pub struct Band {
     // pub band_desc: &BandDesc,
     pub top_thou: Thou,
     pub bot_thou: Thou,
     pub thous_top_to_bot: Vec<Thou>,
-    pub label_ids: Vec<LabelId>, // A ply can have multiple labels if it's discontiguous
+    pub label_ids: Vec<LabelVal>, // A ply can have multiple labels if it's discontiguous
 }
 
 // Note sure yet how I'm making these from Descs so I just want to hard od them for now
@@ -48,15 +50,16 @@ pub struct Band {
 //     }
 // }
 
+#[allow(dead_code)]
 pub fn create_bands(
     sep_im: &SepIm,
-    sep_to_thou: &HashMap<LabelId, Thou>,
+    sep_to_thou: &HashMap<LabelVal, Thou>,
     band_descs: &[BandDesc],
     label_infos: &[LabelInfo],
 ) -> Vec<Band> {
     // Label connected components in `sep_im` (treating 0 as background).
     // Each label corresponds to one contiguous region with a single `sep_im` value.
-    // let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(sep_im);
+    // let (_label_id_im, label_infos): (Im<LabelVal>, Vec<LabelInfo>) = label_im(sep_im);
 
     let mut bands: Vec<Band> = band_descs
         .iter()
@@ -70,12 +73,12 @@ pub fn create_bands(
 
     // label_infos[0] is reserved.
     for (label_i, info) in label_infos.iter().enumerate().skip(1) {
-        let label_id: LabelId = label_i
+        let label_id: LabelVal = label_i
             .try_into()
-            .unwrap_or_else(|_| panic!("too many labels for LabelId (u16): {label_i}"));
+            .unwrap_or_else(|_| panic!("too many labels for LabelVal (u16): {label_i}"));
 
         // Representative pixel for this connected component.
-        let sep_val: LabelId = sep_im.arr[info.start_y * sep_im.s + info.start_x];
+        let sep_val: LabelVal = sep_im.arr[info.start_y * sep_im.s + info.start_x];
         if sep_val == 0 {
             // Should not happen since label_im skips background, but be tolerant.
             continue;
@@ -99,9 +102,7 @@ pub fn create_bands(
         }
 
         if !assigned {
-            panic!(
-                "label {label_id} (sep_val={sep_val}, thou={thou}) did not fit any band"
-            );
+            panic!("label {label_id} (sep_val={sep_val}, thou={thou}) did not fit any band");
         }
     }
 
@@ -114,14 +115,14 @@ pub fn create_bands(
     bands
 }
 
-// fn create_cut_stack(sep_im: &Im<SepVal>, label_id_im: Im<LabelId>, label_infos:Vec<LabelInfo>, bands: &Vec<Band>) {
-    // let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(sep_im);
-    // TODO
-// }
+fn create_cut_stack(sep_im: &SepIm, label_id_im: LabelIm, label_infos:Vec<LabelInfo>, bands: &Vec<Band>) {
+    // For each band 
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::im::label_im;
 
     fn rough_band_desc(top_thou: i32, bot_thou: i32) -> BandDesc {
         BandDesc {
@@ -139,7 +140,7 @@ mod tests {
         assert!(divisions > 0, "divisions must be > 0");
         let divisions_usize = divisions as usize;
 
-        let mut sep_im: SepIm = Im::<u16>::new(dim, dim, 1);
+        let mut sep_im: SepIm = SepIm::new(dim, dim);
         for y in 0..dim {
             for x in 0..dim {
                 // Map x in [0, dim) into labels 1..=divisions as evenly as possible.
@@ -151,26 +152,29 @@ mod tests {
         sep_im
     }
 
-    fn make_squares_within_squares_sep_im(dim: usize, square_size: usize, gap_size: usize) -> SepIm {
-        let mut sep_im: SepIm = Im::<u16>::new(dim, dim, 1);
-        let mut label: u16 = 1;
+    // fn make_squares_within_squares_sep_im(
+    //     dim: usize,
+    //     square_size: usize,
+    //     gap_size: usize,
+    // ) -> SepIm {
+    //     let mut sep_im: SepIm = SepIm::new(dim, dim);
+    //     let mut label: u16 = 1;
 
-        let step = square_size + gap_size;
-        for y_start in (0..dim).step_by(step) {
-            for x_start in (0..dim).step_by(step) {
-                // Fill square
-                for y in y_start..(y_start + square_size).min(dim) {
-                    for x in x_start..(x_start + square_size).min(dim) {
-                        sep_im.arr[y * sep_im.s + x] = label;
-                    }
-                }
-                label += 1;
-            }
-        }
+    //     let step = square_size + gap_size;
+    //     for y_start in (0..dim).step_by(step) {
+    //         for x_start in (0..dim).step_by(step) {
+    //             // Fill square
+    //             for y in y_start..(y_start + square_size).min(dim) {
+    //                 for x in x_start..(x_start + square_size).min(dim) {
+    //                     sep_im.arr[y * sep_im.s + x] = label;
+    //                 }
+    //             }
+    //             label += 1;
+    //         }
+    //     }
 
-        sep_im
-    }
-
+    //     sep_im
+    // }
 
     #[test]
     fn it_creates_assigns_to_bands() {
@@ -180,9 +184,9 @@ mod tests {
 
         let band_descs = rough_two_bands();
 
-        let sep_to_thou: HashMap<LabelId, Thou> = HashMap::from([(1, 900), (2, 800)]);
+        let sep_to_thou: HashMap<LabelVal, Thou> = HashMap::from([(1, 900), (2, 800)]);
 
-        let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(&sep_im);
+        let (_label_id_im, label_infos): (Im<LabelVal, 1>, Vec<LabelInfo>) = label_im(&sep_im);
 
         let bands = create_bands(&sep_im, &sep_to_thou, &band_descs, &label_infos);
 
@@ -209,9 +213,9 @@ mod tests {
 
         let band_descs = rough_two_bands();
 
-        let sep_to_thou: HashMap<LabelId, Thou> = HashMap::from([(1, 900), (2, 800), (3, 700)]);
+        let sep_to_thou: HashMap<LabelVal, Thou> = HashMap::from([(1, 900), (2, 800), (3, 700)]);
 
-        let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(&sep_im);
+        let (_label_id_im, label_infos): (SepIm, Vec<LabelInfo>) = label_im(&sep_im);
 
         let bands = create_bands(&sep_im, &sep_to_thou, &band_descs, &label_infos);
         assert_eq!(bands.len(), 2);
@@ -226,15 +230,13 @@ mod tests {
         assert_eq!(bands[1].label_ids, vec![3]);
         assert_eq!(bands[1].thous_top_to_bot, vec![700]);
     }
-
-    #[test]
-    fn it_creates_a_cut_stack() {
-        let sep_im = make_squares_within_squares_sep_im(250, 25, 10);
-
-    }
 }
 
-
+//     #[test]
+//     fn it_creates_a_cut_stack() {
+//         let sep_im = make_squares_within_squares_sep_im(250, 25, 10);
+//     }
+// }
 
 /*
 The input is plies
@@ -332,5 +334,4 @@ the vectors for each
 
 // pub fn rough_cut_stack(sep_im:SepIm, roi:ROI, ) {
 //     // For each
-
 // }
