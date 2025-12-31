@@ -11,35 +11,37 @@ pub struct Im<T, const N_CH: usize> {
     pub arr: Vec<T>,
 }
 
-// Channel-count constraints
-pub trait ValidNCh {}
-impl ValidNCh for [(); 1] {}
-impl ValidNCh for [(); 4] {}
-
-// Pixel component constraints (sealed)
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for u8 {}
-    impl Sealed for u16 {}
+// Helpers for i32 PNG packing/unpacking
+// ------------------------------------------------------------------------------
+fn dim_mismatch_err() -> image::ImageError {
+    image::ImageError::Parameter(image::error::ParameterError::from_kind(
+        image::error::ParameterErrorKind::DimensionMismatch,
+    ))
 }
 
-pub trait PixelComponent: sealed::Sealed + Copy + 'static {
-    const BIT_DEPTH: u8;
+fn pack_i32_as_rgba8(pixels: &[i32]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(pixels.len() * 4);
+    for v in pixels {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
 }
 
-impl PixelComponent for u8 {
-    const BIT_DEPTH: u8 = 8;
-}
+fn unpack_rgba8_as_i32(raw_rgba: &[u8]) -> Result<Vec<i32>, image::ImageError> {
+    if raw_rgba.len() % 4 != 0 {
+        return Err(dim_mismatch_err());
+    }
 
-impl PixelComponent for u16 {
-    const BIT_DEPTH: u8 = 16;
+    let mut out: Vec<i32> = Vec::with_capacity(raw_rgba.len() / 4);
+    for px in raw_rgba.chunks_exact(4) {
+        out.push(i32::from_le_bytes([px[0], px[1], px[2], px[3]]));
+    }
+    Ok(out)
 }
 
 // Constructor
-impl<T: Copy + Default, const N_CH: usize> Im<T, N_CH>
-where
-    [(); N_CH]: ValidNCh,
-{
+// ------------------------------------------------------------------------------
+impl<T: Copy + Default, const N_CH: usize> Im<T, N_CH> {
     pub fn new(w: usize, h: usize) -> Self {
         let s = w * N_CH;
         let arr = vec![T::default(); s * h];
@@ -59,7 +61,8 @@ impl<T, const N_CH: usize> Im<T, N_CH> {
     }
 }
 
-// PNG output (layout-specific)
+// PNG I/O
+// ------------------------------------------------------------------------------
 impl Im<u8, 1> {
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
         let img = image::GrayImage::from_raw(self.w as u32, self.h as u32, self.arr.clone())
@@ -117,6 +120,33 @@ impl Im<u16, 4> {
         })?;
 
         img.save_with_format(path, image::ImageFormat::Png)
+    }
+}
+
+impl Im<i32, 1> {
+    // PNG doesn't support 32-bit single-channel integer pixels, so we losslessly
+    // round-trip by packing each i32 into RGBA8 (little-endian bytes).
+    pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
+        let raw = pack_i32_as_rgba8(&self.arr);
+
+        let img = image::RgbaImage::from_raw(self.w as u32, self.h as u32, raw)
+            .ok_or_else(dim_mismatch_err)?;
+
+        img.save_with_format(path, image::ImageFormat::Png)
+    }
+
+    pub fn load_png<P: AsRef<Path>>(path: P) -> ImageResult<Self> {
+        let img = image::open(path)?.into_rgba8();
+        let w = img.width() as usize;
+        let h = img.height() as usize;
+        let raw = img.into_raw();
+
+        if raw.len() != w * h * 4 {
+            return Err(dim_mismatch_err());
+        }
+
+        let arr = unpack_rgba8_as_i32(&raw)?;
+        Ok(Self { w, h, s: w, arr })
     }
 }
 
@@ -358,5 +388,23 @@ mod tests {
         // Background remains 0.
         assert_eq!(dst.arr[idx(0, 0)], 0);
         assert_eq!(dst.arr[idx(3, 3)], 0);
+    }
+
+    #[test]
+    fn i32_png_pack_is_lossless() {
+        let src: [i32; 6] = [0, 1, -1, 123456789, i32::MIN, i32::MAX];
+        let packed = pack_i32_as_rgba8(&src);
+        let unpacked = unpack_rgba8_as_i32(&packed).unwrap();
+        assert_eq!(unpacked, src);
+    }
+
+    #[test]
+    fn can_new_i32_im() {
+        let im = Im::<i32, 1>::new(3, 2);
+        assert_eq!(im.w, 3);
+        assert_eq!(im.h, 2);
+        assert_eq!(im.s, 3);
+        assert_eq!(im.arr.len(), 3 * 2);
+        assert!(im.arr.iter().all(|&v| v == 0));
     }
 }
