@@ -7,7 +7,7 @@ use std::collections::HashMap;
 type Thou = i32; // in thousandths of an inch
 
 type LabelVal = u16;
-type LabelIm = Im<LabelVal, 1>;
+// type LabelIm = Im<LabelVal, 1>;
 
 type SepVal = u16;
 type SepIm = Im<SepVal, 1>;
@@ -73,8 +73,7 @@ pub fn create_bands(
 
     // label_infos[0] is reserved.
     for (label_i, info) in label_infos.iter().enumerate().skip(1) {
-        let label_id: LabelVal = label_i
-            .try_into()
+        let label_id: LabelVal = LabelVal::try_from(label_i)
             .unwrap_or_else(|_| panic!("too many labels for LabelVal (u16): {label_i}"));
 
         // Representative pixel for this connected component.
@@ -115,9 +114,9 @@ pub fn create_bands(
     bands
 }
 
-fn create_cut_stack(sep_im: &SepIm, label_id_im: LabelIm, label_infos:Vec<LabelInfo>, bands: &Vec<Band>) {
-    // For each band 
-}
+// fn create_cut_stack(sep_im: &SepIm, label_id_im: LabelIm, label_infos:Vec<LabelInfo>, bands: &Vec<Band>) {
+//     // For each band 
+// }
 
 #[cfg(test)]
 mod tests {

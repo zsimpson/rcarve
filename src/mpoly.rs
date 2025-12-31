@@ -1,9 +1,14 @@
 use crate::im::Im;
 use clipper2::{EndType, JoinType, One, Path, Paths, Point};
-type IntPoint = Point<One>;
-type IntPath = Path<One>;
-type IntPaths = Paths<One>;
-type MPoly = IntPaths;
+
+pub type IntPoint = Point<One>;
+pub type IntPath = Path<One>;
+pub type IntPaths = Paths<One>;
+
+#[derive(Clone, Debug)]
+pub struct MPoly {
+    paths: IntPaths,
+}
 
 // - callback: Takes the x, y coords and x-span (x_end is not inclusive),
 //   note that `x_end` will always be greater than `x`.
@@ -92,74 +97,123 @@ fn coords_from_path(path: &IntPath) -> Vec<[i32; 2]> {
         .collect()
 }
 
-pub fn raster_mpoly<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32, i32)>(
-    im: &mut Im<T>,
-    mpoly: &MPoly,
-    mut callback: F,
-) {
-    let rings: Vec<Vec<[i32; 2]>> = mpoly.iter().map(coords_from_path).collect();
-    fill_poly_v2i_n(
-        0,
-        0,
-        im.w as i32,
-        im.h as i32,
-        &rings,
-        &mut |x_start: i32, x_end: i32, y: i32| callback(im, x_start, x_end, y),
-    );
-}
-
-pub fn raster_mpoly_edges<T: Copy + Default, F: FnMut(&mut Im<T>, i32, i32)>(
-    im: &mut Im<T>,
-    mpoly: &MPoly,
-    mut callback: F,
-) {
-    for path in mpoly.iter() {
-        let coords = coords_from_path(path);
-        let n = coords.len();
-        if n < 2 {
-            continue;
+impl MPoly {
+    pub fn new(paths: Vec<IntPath>) -> Self {
+        Self {
+            paths: IntPaths::new(paths),
         }
+    }
 
-        for i in 0..n {
-            let p0 = coords[i];
-            let p1 = coords[(i + 1) % n];
+    pub fn from_paths(paths: IntPaths) -> Self {
+        Self { paths }
+    }
 
-            // Bresenham's line algorithm
-            let dx = (p1[0] - p0[0]).abs();
-            let dy = -(p1[1] - p0[1]).abs();
-            let sx = if p0[0] < p1[0] { 1 } else { -1 };
-            let sy = if p0[1] < p1[1] { 1 } else { -1 };
-            let mut err = dx + dy;
-            let mut x = p0[0];
-            let mut y = p0[1];
+    pub fn paths(&self) -> &IntPaths {
+        &self.paths
+    }
 
-            loop {
-                if x >= 0 && x < im.w as i32 && y >= 0 && y < im.h as i32 {
-                    callback(im, x, y);
-                }
-                if x == p1[0] && y == p1[1] {
-                    break;
-                }
-                let e2 = 2 * err;
-                if e2 >= dy {
-                    err += dy;
-                    x += sx;
-                }
-                if e2 <= dx {
-                    err += dx;
-                    y += sy;
+    pub fn into_paths(self) -> IntPaths {
+        self.paths
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &IntPath> {
+        self.paths.iter()
+    }
+
+    pub fn inflate(&self, delta: f64, join: JoinType, end: EndType, miter_limit: f64) -> Self {
+        Self {
+            paths: self.paths.inflate(delta, join, end, miter_limit),
+        }
+    }
+
+    pub fn simplify(&self, epsilon: f64, preserve_collinear: bool) -> Self {
+        Self {
+            paths: self.paths.simplify(epsilon, preserve_collinear),
+        }
+    }
+
+    pub fn raster<T: Copy + Default, const N_CH: usize, F: FnMut(&mut Im<T, N_CH>, i32, i32, i32)>(
+        &self,
+        im: &mut Im<T, N_CH>,
+        mut callback: F,
+    ) {
+        let rings: Vec<Vec<[i32; 2]>> = self.paths.iter().map(coords_from_path).collect();
+        fill_poly_v2i_n(
+            0,
+            0,
+            im.w as i32,
+            im.h as i32,
+            &rings,
+            &mut |x_start: i32, x_end: i32, y: i32| callback(im, x_start, x_end, y),
+        );
+    }
+
+    pub fn raster_edges<
+        T: Copy + Default,
+        const N_CH: usize,
+        F: FnMut(&mut Im<T, N_CH>, i32, i32),
+    >(
+        &self,
+        im: &mut Im<T, N_CH>,
+        mut callback: F,
+    ) {
+        for path in self.paths.iter() {
+            let coords = coords_from_path(path);
+            let n = coords.len();
+            if n < 2 {
+                continue;
+            }
+
+            for i in 0..n {
+                let p0 = coords[i];
+                let p1 = coords[(i + 1) % n];
+
+                // Bresenham's line algorithm
+                let dx = (p1[0] - p0[0]).abs();
+                let dy = -(p1[1] - p0[1]).abs();
+                let sx = if p0[0] < p1[0] { 1 } else { -1 };
+                let sy = if p0[1] < p1[1] { 1 } else { -1 };
+                let mut err = dx + dy;
+                let mut x = p0[0];
+                let mut y = p0[1];
+
+                loop {
+                    if x >= 0 && x < im.w as i32 && y >= 0 && y < im.h as i32 {
+                        callback(im, x, y);
+                    }
+                    if x == p1[0] && y == p1[1] {
+                        break;
+                    }
+                    let e2 = 2 * err;
+                    if e2 >= dy {
+                        err += dy;
+                        x += sx;
+                    }
+                    if e2 <= dx {
+                        err += dx;
+                        y += sy;
+                    }
                 }
             }
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::f64::consts::TAU;
 
     use image::RgbaImage;
+
+    use crate::im::RGBAIm;
 
     use super::*;
 
@@ -176,7 +230,6 @@ mod tests {
         )
     }
 
-    #[allow(dead_code)]
     fn circle_coords(n: usize, cx: f64, cy: f64, r: f64) -> Vec<[i32; 2]> {
         assert!(n >= 3, "circle needs at least 3 vertices");
         assert!(r.is_finite() && r > 0.0, "radius must be finite and > 0");
@@ -193,23 +246,17 @@ mod tests {
             .collect()
     }
 
-    fn save_rgba_im(im: &Im<[u8; 4]>, out_path: &str) {
+    fn save_rgba_im(im: &RGBAIm, out_path: &str) {
         let w = im.w;
         let h = im.h;
-
-        let mut raw: Vec<u8> = Vec::with_capacity(w * h * 4);
-        for px in &im.arr {
-            raw.extend_from_slice(px);
-        }
-
-        let img = RgbaImage::from_raw(w as u32, h as u32, raw).expect("invalid RGBA image buffer");
+        let img = RgbaImage::from_raw(w as u32, h as u32, im.arr.clone())
+            .expect("invalid RGBA image buffer");
         img.save(out_path)
             .unwrap_or_else(|e| panic!("failed to save {out_path}: {e}"));
     }
 
     #[test]
     fn erode_no_hole() {
-        // Make IntPaths from the coords above.
         let path: IntPath = ipath(vec![
             [10, 10],
             [30, 10],
@@ -224,14 +271,17 @@ mod tests {
         let mpoly: MPoly = MPoly::new(vec![path]);
 
         // Allocate RGBA 8-bit im 150x150 pixels
-        let mut im = Im::<[u8; 4]>::new(150, 150);
+        let mut im = RGBAIm::new(150, 150);
 
         // Plot onto the im with red
         {
-            raster_mpoly(&mut im, &mpoly, |im, x_start, x_end, y| {
+            mpoly.raster(&mut im, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                        *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
+                        *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
+                        *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
+                        *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
                     }
                 }
             });
@@ -246,11 +296,10 @@ mod tests {
 
         // Plot dilated polygon onto the im by setting only the green channel.
         {
-            raster_mpoly(&mut im, &dilated, |im, x_start, x_end, y| {
-                // println!("  p[{}, {}, {}],", x_start, x_end, y);
+            dilated.raster(&mut im, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        (*im.get_unchecked_mut(x as usize, y as usize))[1] = 255;
+                        *im.get_unchecked_mut(x as usize, y as usize, 1) = 255;
                     }
                 }
             });
@@ -269,14 +318,17 @@ mod tests {
         let mpoly: MPoly = MPoly::new(vec![outer, hole0, hole1]);
 
         // Allocate RGBA 8-bit im
-        let mut im = Im::<[u8; 4]>::new(120, 120);
+        let mut im = RGBAIm::new(120, 120);
 
         // Plot onto the im with red
         {
-            raster_mpoly(&mut im, &mpoly, |im, x_start, x_end, y| {
+            mpoly.raster(&mut im, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                        *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
+                        *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
+                        *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
+                        *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
                     }
                 }
             });
@@ -289,11 +341,10 @@ mod tests {
 
         // Plot dilated polygon onto the im by setting only the green channel.
         {
-            raster_mpoly(&mut im, &dilated, |im, x_start, x_end, y| {
-                // println!("  p[{}, {}, {}],", x_start, x_end, y);
+            dilated.raster(&mut im, |im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        (*im.get_unchecked_mut(x as usize, y as usize))[1] = 255;
+                        *im.get_unchecked_mut(x as usize, y as usize, 1) = 255;
                     }
                 }
             });
@@ -308,10 +359,13 @@ mod tests {
         let mpoly: MPoly = MPoly::new(vec![ipath(verts)]);
 
         // Allocate RGBA 8-bit im
-        let mut im = Im::<[u8; 4]>::new(120, 120);
-        raster_mpoly_edges(&mut im, &mpoly, |im, x, y| {
+        let mut im = RGBAIm::new(120, 120);
+        mpoly.raster_edges(&mut im, |im, x, y| {
             unsafe {
-                *im.get_unchecked_mut(x as usize, y as usize) = [255, 0, 0, 255];
+                *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
+                *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
+                *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
+                *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
             }
         });
 

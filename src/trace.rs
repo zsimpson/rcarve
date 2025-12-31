@@ -410,7 +410,7 @@ pub fn contours_by_suzuki_abe(im: &mut Im<i32, 1>) -> Vec<Contour> {
                         let idx3 = idx(im.s, ux3, uy3);
 
                         if east_was_examined {
-                            let east = im.arr[idx(im.s, (ux3 + 1), uy3)];
+                            let east = im.arr[idx(im.s, ux3 + 1, uy3)];
                             if east == 0 {
                                 im.arr[idx3] = -curr_id;
                             } else if im.arr[idx3] == 1 {
@@ -806,7 +806,9 @@ mod tests {
         let mask_im = im.to_mask_im();
         im::copy_mask_im_to_rgba_im(&mask_im, &mut debug_im, 200, 200, 200);
         contours.draw_into_rgba_im_alternating_colors(&mut debug_im, 255, 0, 0, 0, 255, 0);
-        debug_im.save_png("_test_suzuki_abe_contours_no_simplify.png");
+        debug_im
+            .save_png("_test_suzuki_abe_contours_no_simplify.png")
+            .expect("failed to save _test_suzuki_abe_contours_no_simplify.png");
 
         let mut debug_im = RGBAIm::new(im.w, im.h);
         let mask_im = im.to_mask_im();
@@ -815,7 +817,9 @@ mod tests {
             let simplified = contour.simplify_by_rdp(0.9);
             simplified.draw_into_rgba_im_alternating_colors(&mut debug_im, 255, 0, 0, 0, 255, 0);
         }
-        debug_im.save_png("_test_suzuki_abe_contours_with_simplify.png");
+        debug_im
+            .save_png("_test_suzuki_abe_contours_with_simplify.png")
+            .expect("failed to save _test_suzuki_abe_contours_with_simplify.png");
 
     }
 

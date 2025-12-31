@@ -1,0 +1,16 @@
+pub mod core;
+#[allow(unused_imports)]
+pub use core::{copy_mask_im_to_rgba_im, Im, Lum16Im, Lum8Im, MaskIm, RGBAIm};
+
+// Optional extras
+// -----------------------------------------------------------------------------
+
+#[cfg(feature = "im-io")]
+pub mod io;
+
+#[cfg(feature = "im-label")]
+pub mod label;
+
+#[cfg(feature = "im-label")]
+#[allow(unused_imports)]
+pub use label::{label_im, LabelInfo};

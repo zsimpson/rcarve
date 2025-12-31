@@ -1,0 +1,11 @@
+// Library crate root.
+//
+// This crate is used both as a binary (src/main.rs) and as a library.
+// Keeping modules here prevents "dead_code" warnings for public APIs that are
+// intentionally exported for downstream crates.
+
+pub mod im;
+pub mod desc;
+pub mod cut_stack;
+pub mod trace;
+pub mod mpoly;
