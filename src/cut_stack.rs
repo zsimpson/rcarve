@@ -1,12 +1,14 @@
 use crate::desc::BandDesc;
 use crate::im::{label_im, Im};
+use crate::im::LabelInfo;
 
 use std::collections::HashMap;
 
 type Thou = i32; // in thousandths of an inch
 
 type LabelId = u16;
-type SepIm = Im<u16>;
+type SepVal = u16;
+type SepIm = Im<SepVal>;
 
 pub struct ROI {
     pub x: usize,
@@ -50,11 +52,11 @@ pub fn create_bands(
     sep_im: &SepIm,
     sep_to_thou: &HashMap<LabelId, Thou>,
     band_descs: &[BandDesc],
+    label_infos: &[LabelInfo],
 ) -> Vec<Band> {
     // Label connected components in `sep_im` (treating 0 as background).
     // Each label corresponds to one contiguous region with a single `sep_im` value.
-    let mut label_id_im: Im<LabelId> = Im::<LabelId>::new(sep_im.w, sep_im.h);
-    let label_infos = label_im(sep_im, &mut label_id_im);
+    // let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(sep_im);
 
     let mut bands: Vec<Band> = band_descs
         .iter()
@@ -112,6 +114,11 @@ pub fn create_bands(
     bands
 }
 
+// fn create_cut_stack(sep_im: &Im<SepVal>, label_id_im: Im<LabelId>, label_infos:Vec<LabelInfo>, bands: &Vec<Band>) {
+    // let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(sep_im);
+    // TODO
+// }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,7 +139,7 @@ mod tests {
         assert!(divisions > 0, "divisions must be > 0");
         let divisions_usize = divisions as usize;
 
-        let mut sep_im: SepIm = Im::<u16>::new(dim, dim);
+        let mut sep_im: SepIm = Im::<u16>::new(dim, dim, 1);
         for y in 0..dim {
             for x in 0..dim {
                 // Map x in [0, dim) into labels 1..=divisions as evenly as possible.
@@ -144,8 +151,29 @@ mod tests {
         sep_im
     }
 
+    fn make_squares_within_squares_sep_im(dim: usize, square_size: usize, gap_size: usize) -> SepIm {
+        let mut sep_im: SepIm = Im::<u16>::new(dim, dim, 1);
+        let mut label: u16 = 1;
+
+        let step = square_size + gap_size;
+        for y_start in (0..dim).step_by(step) {
+            for x_start in (0..dim).step_by(step) {
+                // Fill square
+                for y in y_start..(y_start + square_size).min(dim) {
+                    for x in x_start..(x_start + square_size).min(dim) {
+                        sep_im.arr[y * sep_im.s + x] = label;
+                    }
+                }
+                label += 1;
+            }
+        }
+
+        sep_im
+    }
+
+
     #[test]
-    fn create_bands_splits_components_and_assigns_to_bands() {
+    fn it_creates_assigns_to_bands() {
         const DIM: usize = 100;
 
         let sep_im = make_sep_im_equal_divisions(DIM, 2);
@@ -154,7 +182,9 @@ mod tests {
 
         let sep_to_thou: HashMap<LabelId, Thou> = HashMap::from([(1, 900), (2, 800)]);
 
-        let bands = create_bands(&sep_im, &sep_to_thou, &band_descs);
+        let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(&sep_im);
+
+        let bands = create_bands(&sep_im, &sep_to_thou, &band_descs, &label_infos);
 
         assert_eq!(bands.len(), 2);
 
@@ -172,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn create_bands_three_bands_with_boundary_at_700() {
+    fn it_splits_bands_with_boundary() {
         const DIM: usize = 100;
 
         let sep_im = make_sep_im_equal_divisions(DIM, 3);
@@ -181,7 +211,9 @@ mod tests {
 
         let sep_to_thou: HashMap<LabelId, Thou> = HashMap::from([(1, 900), (2, 800), (3, 700)]);
 
-        let bands = create_bands(&sep_im, &sep_to_thou, &band_descs);
+        let (_label_id_im, label_infos): (Im<LabelId>, Vec<LabelInfo>) = label_im(&sep_im);
+
+        let bands = create_bands(&sep_im, &sep_to_thou, &band_descs, &label_infos);
         assert_eq!(bands.len(), 2);
 
         assert_eq!(bands[0].top_thou, 1000);
@@ -193,6 +225,12 @@ mod tests {
         assert_eq!(bands[1].bot_thou, 500);
         assert_eq!(bands[1].label_ids, vec![3]);
         assert_eq!(bands[1].thous_top_to_bot, vec![700]);
+    }
+
+    #[test]
+    fn it_creates_a_cut_stack() {
+        let sep_im = make_squares_within_squares_sep_im(250, 25, 10);
+
     }
 }
 
