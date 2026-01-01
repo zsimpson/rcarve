@@ -6,6 +6,7 @@
 
 pub mod im;
 pub mod desc;
+#[cfg(feature = "cut-stack")]
 pub mod cut_stack;
 pub mod trace;
 pub mod mpoly;

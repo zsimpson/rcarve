@@ -18,3 +18,6 @@ im-io = ["dep:image"]
 
 # Optional connected-component labeling utilities.
 im-label = []
+
+# Work-in-progress cut planning/raster pipeline.
+cut-stack = []

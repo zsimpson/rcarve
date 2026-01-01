@@ -1,8 +1,8 @@
 use super::core::Im;
 
 /// Flood-fill a connected component in a single-channel image.
-fn flood_im<SrcT, TarT>(
-    src_im: &Im<SrcT, 1>,
+fn flood_im<SrcT, TarT, S>(
+    src_im: &Im<SrcT, 1, S>,
     dst_im: &mut Im<TarT, 1>,
     start_x: usize,
     start_y: usize,
@@ -86,7 +86,7 @@ pub struct LabelInfo {
 }
 
 /// Label a single channel image's connected components.
-pub fn label_im<SrcT, TarT>(src_im: &Im<SrcT, 1>) -> (Im<TarT, 1>, Vec<LabelInfo>)
+pub fn label_im<SrcT, TarT, S>(src_im: &Im<SrcT, 1, S>) -> (Im<TarT, 1>, Vec<LabelInfo>)
 where
     SrcT: Copy + Default + PartialEq,
     TarT: Copy + Default + PartialEq + TryFrom<usize>,

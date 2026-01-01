@@ -2,15 +2,26 @@ use serde::Deserialize;
 use std::fmt;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-#[serde(transparent)]
-pub struct Guid(pub String);
+macro_rules! transparent_newtype {
+    ($name:ident($inner:ty)) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub $inner);
+    };
+}
 
+transparent_newtype!(Thou(i32));
+
+transparent_newtype!(Guid(String));
 impl fmt::Display for Guid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
+
+// At some point I might consider a Deref impl here, but for now keep it simple.
+type FlatVerts = Vec<i32>;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,11 +51,32 @@ pub struct DimDesc {
     pub frame_inch: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PolyDesc {
+    pub exterior: FlatVerts,
+    #[serde(default)]
+    pub holes: Vec<FlatVerts>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
+#[serde(from = "PlyDescRaw")]
 pub struct PlyDesc {
     pub owner_layer_guid: Guid,
     pub guid: Guid,
-    pub top_thou: i32,
+    pub top_thou: Thou,
+    pub hidden: bool,
+    pub is_floor: bool,
+    #[serde(default = "default_ply_mat")]
+    pub ply_mat: Vec<f32>,
+    #[serde(default)]
+    pub mpoly: Vec<crate::mpoly::MPoly>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PlyDescRaw {
+    pub owner_layer_guid: Guid,
+    pub guid: Guid,
+    pub top_thou: Thou,
     pub hidden: bool,
     pub is_floor: bool,
     #[serde(default = "default_ply_mat")]
@@ -53,17 +85,30 @@ pub struct PlyDesc {
     pub mpoly: Vec<PolyDesc>,
 }
 
-fn default_ply_mat() -> Vec<f32> {
-    vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+impl From<PlyDescRaw> for PlyDesc {
+    fn from(raw: PlyDescRaw) -> Self {
+        let ply_xform = crate::mat3::Mat3::from_ply_mat(&raw.ply_mat).unwrap_or_default();
+        let mpoly = raw
+            .mpoly
+            .iter()
+            .map(|pd| polydesc_to_mpoly(pd, &ply_xform))
+            .collect();
+
+        Self {
+            owner_layer_guid: raw.owner_layer_guid,
+            guid: raw.guid,
+            top_thou: raw.top_thou,
+            hidden: raw.hidden,
+            is_floor: raw.is_floor,
+            ply_mat: raw.ply_mat,
+            mpoly,
+        }
+    }
 }
 
-pub type FlatVerts = Vec<i32>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct PolyDesc {
-    pub exterior: FlatVerts,
-    #[serde(default)]
-    pub holes: Vec<FlatVerts>,
+fn default_ply_mat() -> Vec<f32> {
+    vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,14 +128,53 @@ pub struct CarveDesc {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BandDesc {
-    pub top_thou: i32,
-    pub bot_thou: i32,
-    pub which: String,
+    pub top_thou: Thou,
+    pub bot_thou: Thou,
+    pub cut_pass: String,
 }
 
 pub fn parse_comp_json(json_text: &str) -> Result<CompDesc, serde_json::Error> {
     serde_json::from_str(json_text)
 }
+
+use crate::mat3::Mat3;
+use crate::mpoly::{IntPath, IntPoint, MPoly};
+pub fn polydesc_to_mpoly(polydesc: &PolyDesc, ply_xform: &Mat3) -> MPoly {
+    fn flat_verts_to_path(flat: &[i32], ply_xform: &Mat3) -> Option<IntPath> {
+        // flat = [x0, y0, x1, y1, ...]
+        // Need at least 3 points (6 ints).
+        if flat.len() < 6 {
+            return None;
+        }
+
+        let n = flat.len() - (flat.len() % 2);
+        if n < 6 {
+            return None;
+        }
+
+        let mut pts: Vec<IntPoint> = Vec::with_capacity(n / 2);
+        for xy in flat[..n].chunks_exact(2) {
+            let (x, y) = ply_xform.transform_point2(xy[0] as f64, xy[1] as f64);
+            pts.push(IntPoint::from_scaled(x.round() as i64, y.round() as i64));
+        }
+
+        Some(IntPath::new(pts))
+    }
+
+    let mut paths: Vec<IntPath> = Vec::with_capacity(1 + polydesc.holes.len());
+    if let Some(ext) = flat_verts_to_path(&polydesc.exterior, ply_xform) {
+        paths.push(ext);
+    }
+    for hole in &polydesc.holes {
+        if let Some(h) = flat_verts_to_path(hole, ply_xform) {
+            paths.push(h);
+        }
+    }
+
+    MPoly::new(paths)
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -190,17 +274,17 @@ mod tests {
                 {
                     "top_thou": 1000,
                     "bot_thou": 900,
-                    "which": "refine"
+                    "cut_pass": "refine"
                 },
                 {
                     "top_thou": 900,
                     "bot_thou": 800,
-                    "which": "refine"
+                    "cut_pass": "refine"
                 },
                 {
                     "top_thou": 1000,
                     "bot_thou": 200,
-                    "which": "rough"
+                    "cut_pass": "rough"
                 }
             ]
         }
@@ -218,19 +302,19 @@ mod tests {
             comp.bands,
             vec![
                 BandDesc {
-                    top_thou: 1000,
-                    bot_thou: 900,
-                    which: "refine".to_string(),
+                    top_thou: Thou(1000),
+                    bot_thou: Thou(900),
+                    cut_pass: "refine".to_string(),
                 },
                 BandDesc {
-                    top_thou: 900,
-                    bot_thou: 800,
-                    which: "refine".to_string(),
+                    top_thou: Thou(900),
+                    bot_thou: Thou(800),
+                    cut_pass: "refine".to_string(),
                 },
                 BandDesc {
-                    top_thou: 1000,
-                    bot_thou: 200,
-                    which: "rough".to_string(),
+                    top_thou: Thou(1000),
+                    bot_thou: Thou(200),
+                    cut_pass: "rough".to_string(),
                 }
             ]
         );
@@ -239,13 +323,13 @@ mod tests {
             .ply_desc_by_guid
             .get(&Guid("HZWKZRTQJV".to_string()))
             .expect("ply HZWKZRTQJV should exist");
-        assert_eq!(ply.top_thou, 100);
+        assert_eq!(ply.top_thou, Thou(100));
         assert!(ply.is_floor);
 
         assert_eq!(ply.mpoly.len(), 1);
-        assert_eq!(ply.mpoly[0].exterior.len(), 8);
-        assert_eq!(ply.mpoly[0].holes.len(), 1);
-        assert_eq!(ply.mpoly[0].holes[0].len(), 8);
+        assert_eq!(ply.mpoly[0].len(), 2, "exterior + 1 hole");
+        let path_lens: Vec<usize> = ply.mpoly[0].iter().map(|p| p.len()).collect();
+        assert_eq!(path_lens, vec![4, 4], "exterior + hole vertex counts");
 
         assert!(comp
             .layer_desc_by_guid

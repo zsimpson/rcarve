@@ -32,7 +32,7 @@ fn unpack_rgba8_as_i32(raw_rgba: &[u8]) -> Result<Vec<i32>, image::ImageError> {
 
 // PNG I/O
 // -----------------------------------------------------------------------------
-impl Im<u8, 1> {
+impl<S> Im<u8, 1, S> {
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
         let img = image::GrayImage::from_raw(self.w as u32, self.h as u32, self.arr.clone())
             .ok_or_else(|| {
@@ -45,7 +45,7 @@ impl Im<u8, 1> {
     }
 }
 
-impl Im<u8, 4> {
+impl<S> Im<u8, 4, S> {
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
         let img = image::RgbaImage::from_raw(self.w as u32, self.h as u32, self.arr.clone())
             .ok_or_else(|| {
@@ -58,7 +58,7 @@ impl Im<u8, 4> {
     }
 }
 
-impl Im<u16, 1> {
+impl<S> Im<u16, 1, S> {
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
         let img = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
             self.w as u32,
@@ -75,7 +75,7 @@ impl Im<u16, 1> {
     }
 }
 
-impl Im<u16, 4> {
+impl<S> Im<u16, 4, S> {
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
         let img = image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
             self.w as u32,
@@ -92,7 +92,7 @@ impl Im<u16, 4> {
     }
 }
 
-impl Im<i32, 1> {
+impl<S> Im<i32, 1, S> {
     // PNG doesn't support 32-bit single-channel integer pixels, so we losslessly
     // round-trip by packing each i32 into RGBA8 (little-endian bytes).
     pub fn save_png<P: AsRef<Path>>(&self, path: P) -> ImageResult<()> {
@@ -103,6 +103,9 @@ impl Im<i32, 1> {
 
         img.save_with_format(path, image::ImageFormat::Png)
     }
+}
+
+impl Im<i32, 1> {
 
     pub fn load_png<P: AsRef<Path>>(path: P) -> ImageResult<Self> {
         let img = image::open(path)?.into_rgba8();
@@ -115,7 +118,9 @@ impl Im<i32, 1> {
         }
 
         let arr = unpack_rgba8_as_i32(&raw)?;
-        Ok(Self { w, h, s: w, arr })
+        let mut out = Im::<i32, 1>::new(w, h);
+        out.arr = arr;
+        Ok(out)
     }
 }
 

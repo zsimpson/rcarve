@@ -140,13 +140,31 @@ impl MPoly {
         }
     }
 
+    pub fn translated(&self, dx: i64, dy: i64) -> Self {
+        if dx == 0 && dy == 0 {
+            return self.clone();
+        }
+
+        let mut out_paths: Vec<IntPath> = Vec::with_capacity(self.paths.len());
+        for path in self.paths.iter() {
+            let mut out_pts: Vec<IntPoint> = Vec::with_capacity(path.len());
+            for pt in path.iter() {
+                out_pts.push(IntPoint::from_scaled(pt.x_scaled() + dx, pt.y_scaled() + dy));
+            }
+            out_paths.push(IntPath::new(out_pts));
+        }
+
+        Self::new(out_paths)
+    }
+
     pub fn raster<
         T: Copy + Default,
         const N_CH: usize,
-        F: FnMut(&mut Im<T, N_CH>, i32, i32, i32),
+        S,
+        F: FnMut(&mut Im<T, N_CH, S>, i32, i32, i32),
     >(
         &self,
-        im: &mut Im<T, N_CH>,
+        im: &mut Im<T, N_CH, S>,
         mut callback: F,
     ) {
         let rings: Vec<Vec<[i32; 2]>> = self.paths.iter().map(coords_from_path).collect();
@@ -163,10 +181,11 @@ impl MPoly {
     pub fn raster_edges<
         T: Copy + Default,
         const N_CH: usize,
-        F: FnMut(&mut Im<T, N_CH>, i32, i32),
+        S,
+        F: FnMut(&mut Im<T, N_CH, S>, i32, i32),
     >(
         &self,
-        im: &mut Im<T, N_CH>,
+        im: &mut Im<T, N_CH, S>,
         mut callback: F,
     ) {
         for path in self.paths.iter() {

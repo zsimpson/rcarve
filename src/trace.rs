@@ -498,9 +498,9 @@ impl Contour {
         dump_contour_line(self, 2);
     }
 
-    pub fn draw_into_rgba_im_alternating_colors(
+    pub fn draw_into_rgba_im_alternating_colors<S>(
         &self,
-        im: &mut Im<u8, 4>,
+        im: &mut Im<u8, 4, S>,
         r0: u8,
         g0: u8,
         b0: u8,
@@ -512,7 +512,7 @@ impl Contour {
         // Color alternates by segment index (starting point index parity).
 
         #[inline]
-        fn put_px(im: &mut Im<u8, 4>, x: i32, y: i32, r: u8, g: u8, b: u8) {
+        fn put_px<S>(im: &mut Im<u8, 4, S>, x: i32, y: i32, r: u8, g: u8, b: u8) {
             if x < 0 || y < 0 {
                 return;
             }
@@ -529,7 +529,7 @@ impl Contour {
         }
 
         #[inline]
-        fn draw_bresenham(im: &mut Im<u8, 4>, a: Iv2, b: Iv2, r: u8, g: u8, bb: u8) {
+        fn draw_bresenham<S>(im: &mut Im<u8, 4, S>, a: Iv2, b: Iv2, r: u8, g: u8, bb: u8) {
             // Classic Bresenham for all octants.
             let mut x0 = a.x;
             let mut y0 = a.y;
@@ -588,9 +588,9 @@ pub trait ContoursDebug {
     /// Dump contours for debugging.
     fn dump(&self);
 
-    fn draw_into_rgba_im_alternating_colors(
+    fn draw_into_rgba_im_alternating_colors<S>(
         &self,
-        im: &mut Im<u8, 4>,
+        im: &mut Im<u8, 4, S>,
         r0: u8,
         g0: u8,
         b0: u8,
@@ -638,9 +638,9 @@ impl ContoursDebug for [Contour] {
         }
     }
 
-    fn draw_into_rgba_im_alternating_colors(
+    fn draw_into_rgba_im_alternating_colors<S>(
         &self,
-        im: &mut Im<u8, 4>,
+        im: &mut Im<u8, 4, S>,
         r0: u8,
         g0: u8,
         b0: u8,
