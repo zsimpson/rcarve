@@ -28,44 +28,77 @@ impl<T, const N_CH: usize> Im<T, N_CH> {
     pub unsafe fn get_unchecked_mut(&mut self, x: usize, y: usize, ch: usize) -> &mut T {
         unsafe { self.arr.get_unchecked_mut(y * self.s + x * N_CH + ch) }
     }
+
+    /// Convert a linear sample index (as used by `pixels`/`pixels_mut`) into `(x, y, ch)`.
+    #[inline]
+    pub fn idx_to_xyc(&self, i: usize) -> (usize, usize, usize) {
+        let y = i / self.s;
+        let rem = i - y * self.s;
+        let x = rem / N_CH;
+        let ch = rem - x * N_CH;
+        (x, y, ch)
+    }
+
+    /// Iterate over all channel samples in-place.
+    ///
+    /// The index `i` is a linear index into `self.arr` (i.e. includes channels).
+    /// This is designed for quick in-place transforms and supports chaining.
+    #[inline]
+    pub fn pixels<F>(&mut self, mut f: F) -> &mut Self
+    where
+        F: FnMut(&mut T, usize),
+    {
+        for (i, v) in self.arr.iter_mut().enumerate() {
+            f(v, i);
+        }
+        self
+    }
+
+    /// Mutable iterator over all channel samples.
+    ///
+    /// Yields `(i, v)` where `i` is the linear index into `self.arr`.
+    #[inline]
+    pub fn pixels_mut(&mut self) -> std::iter::Enumerate<std::slice::IterMut<'_, T>> {
+        self.arr.iter_mut().enumerate()
+    }
 }
 
 // Pixel-wise arithmetic helpers (no external crates).
 // -----------------------------------------------------------------------------
 
-pub trait MulClampMax: Copy {
-    fn mul_clamp_max(self, rhs: Self) -> Self;
-}
+// pub trait MulClampMax: Copy {
+//     fn mul_clamp_max(self, rhs: Self) -> Self;
+// }
 
-macro_rules! impl_mul_clamp_max_int {
-    ($($t:ty),* $(,)?) => {
-        $(
-            impl MulClampMax for $t {
-                #[inline(always)]
-                fn mul_clamp_max(self, rhs: Self) -> Self {
-                    self.checked_mul(rhs).unwrap_or(<$t>::MAX)
-                }
-            }
-        )*
-    };
-}
+// macro_rules! impl_mul_clamp_max_int {
+//     ($($t:ty),* $(,)?) => {
+//         $(
+//             impl MulClampMax for $t {
+//                 #[inline(always)]
+//                 fn mul_clamp_max(self, rhs: Self) -> Self {
+//                     self.checked_mul(rhs).unwrap_or(<$t>::MAX)
+//                 }
+//             }
+//         )*
+//     };
+// }
 
-impl_mul_clamp_max_int!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+// impl_mul_clamp_max_int!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
-impl<T: MulClampMax, const N_CH: usize> Im<T, N_CH> {
-    pub fn mul_const_clamp_max_inplace(&mut self, k: T) -> &mut Self {
-        for v in &mut self.arr {
-            *v = (*v).mul_clamp_max(k);
-        }
-        self
-    }
+// impl<T: MulClampMax, const N_CH: usize> Im<T, N_CH> {
+//     pub fn mul_const_clamp_max_inplace(&mut self, k: T) -> &mut Self {
+//         for v in &mut self.arr {
+//             *v = (*v).mul_clamp_max(k);
+//         }
+//         self
+//     }
 
-    pub fn mul_const_clamp_max(&self, k: T) -> Self {
-        let mut out = self.clone();
-        out.mul_const_clamp_max_inplace(k);
-        out
-    }
-}
+//     pub fn mul_const_clamp_max(&self, k: T) -> Self {
+//         let mut out = self.clone();
+//         out.mul_const_clamp_max_inplace(k);
+//         out
+//     }
+// }
 
 // Convenience APIs that don't depend on external crates.
 // -----------------------------------------------------------------------------
@@ -117,12 +150,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mul_const_clamp_max_u8_clamps_on_overflow() {
-        let mut im = Im::<u8, 1>::new(2, 1);
-        im.arr[0] = 200;
-        im.arr[1] = 10;
+    fn pixels_inplace_transform_runs_in_order() {
+        let mut im = Im::<u8, 1>::new(3, 1);
+        im.arr.copy_from_slice(&[10, 20, 250]);
 
-        let out = im.mul_const_clamp_max(2);
-        assert_eq!(out.arr, vec![255, 20]);
+        im.pixels(|v, _i| {
+            *v = (*v as u16 * 20).min(255) as u8;
+        });
+
+        assert_eq!(im.arr, vec![200, 255, 255]);
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn mul_const_clamp_max_u8_clamps_on_overflow() {
+//         let mut im = Im::<u8, 1>::new(2, 1);
+//         im.arr[0] = 200;
+//         im.arr[1] = 10;
+
+//         let out = im.mul_const_clamp_max(2);
+//         assert_eq!(out.arr, vec![255, 20]);
+//     }
+// }

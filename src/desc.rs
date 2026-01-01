@@ -47,8 +47,14 @@ pub struct PlyDesc {
     pub top_thou: i32,
     pub hidden: bool,
     pub is_floor: bool,
+    #[serde(default = "default_ply_mat")]
+    pub ply_mat: Vec<f32>,
     #[serde(default)]
     pub mpoly: Vec<PolyDesc>,
+}
+
+fn default_ply_mat() -> Vec<f32> {
+    vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
 }
 
 pub type FlatVerts = Vec<i32>;

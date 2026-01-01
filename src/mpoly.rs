@@ -140,7 +140,11 @@ impl MPoly {
         }
     }
 
-    pub fn raster<T: Copy + Default, const N_CH: usize, F: FnMut(&mut Im<T, N_CH>, i32, i32, i32)>(
+    pub fn raster<
+        T: Copy + Default,
+        const N_CH: usize,
+        F: FnMut(&mut Im<T, N_CH>, i32, i32, i32),
+    >(
         &self,
         im: &mut Im<T, N_CH>,
         mut callback: F,
@@ -255,6 +259,31 @@ mod tests {
             .unwrap_or_else(|e| panic!("failed to save {out_path}: {e}"));
     }
 
+    fn fixture_with_holes(dx: i32, dy: i32) -> MPoly {
+        let shift = |coords: Vec<[i32; 2]>| -> Vec<[i32; 2]> {
+            coords.into_iter().map(|[x, y]| [x + dx, y + dy]).collect()
+        };
+
+        // Outer square, plus 2 inset holes.
+        let outer: IntPath = ipath(shift(vec![[10, 10], [90, 10], [90, 90], [10, 90]]));
+        let hole0: IntPath = ipath(shift(vec![[20, 20], [20, 40], [40, 40], [40, 20]]));
+        let hole1: IntPath = ipath(shift(vec![[45, 45], [50, 80], [80, 80], [80, 50]]));
+        MPoly::new(vec![outer, hole0, hole1])
+    }
+
+    fn raster_red(mpoly: &MPoly, im: &mut RGBAIm) {
+        mpoly.raster(im, |im, x_start, x_end, y| {
+            for x in x_start..x_end {
+                unsafe {
+                    *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
+                    *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
+                    *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
+                    *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
+                }
+            }
+        });
+    }
+
     #[test]
     fn erode_no_hole() {
         let path: IntPath = ipath(vec![
@@ -310,28 +339,14 @@ mod tests {
 
     #[test]
     fn erode_with_hole() {
-        // Outer square, plus an inset square hole 10 units smaller on each side.
-        // Outer uses CCW winding, hole uses CW winding.
-        let outer: IntPath = ipath(vec![[10, 10], [90, 10], [90, 90], [10, 90]]);
-        let hole0: IntPath = ipath(vec![[20, 20], [20, 40], [40, 40], [40, 20]]);
-        let hole1: IntPath = ipath(vec![[45, 45], [50, 80], [80, 80], [80, 50]]);
-        let mpoly: MPoly = MPoly::new(vec![outer, hole0, hole1]);
+        let mpoly: MPoly = fixture_with_holes(0, 0);
 
         // Allocate RGBA 8-bit im
         let mut im = RGBAIm::new(120, 120);
 
         // Plot onto the im with red
         {
-            mpoly.raster(&mut im, |im, x_start, x_end, y| {
-                for x in x_start..x_end {
-                    unsafe {
-                        *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
-                        *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
-                        *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
-                        *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
-                    }
-                }
-            });
+            raster_red(&mpoly, &mut im);
         }
 
         // Dilation (positive delta). With the hole being CW, it should shrink.
@@ -354,19 +369,55 @@ mod tests {
     }
 
     #[test]
+    fn raster_clips_when_geometry_outside_image() {
+        // Offset geometry so it extends beyond all four edges of the smaller image.
+        // This should not panic, and the in-bounds pixels should match a clipped
+        // region of a larger render.
+        let mpoly: MPoly = fixture_with_holes(-15, -15);
+
+        let mut big_rgba_im = RGBAIm::new(120, 120);
+        let mut small_rgba_im = RGBAIm::new(60, 60);
+
+        raster_red(&mpoly, &mut big_rgba_im);
+        raster_red(&mpoly, &mut small_rgba_im);
+
+        big_rgba_im
+            .save_png("./test_data/_raster_clips_big.png")
+            .unwrap();
+        small_rgba_im
+            .save_png("./test_data/_raster_clips_small.png")
+            .unwrap();
+
+        // Ensure the test is meaningful (we actually rasterized something in the small image).
+        let any_red = small_rgba_im.arr.iter().step_by(4).any(|&r| r != 0);
+        assert!(any_red, "expected some in-bounds pixels to be filled");
+
+        // Compare small image against the top-left crop of the big image.
+        for y in 0..small_rgba_im.h {
+            for x in 0..small_rgba_im.w {
+                let small_idx = y * small_rgba_im.s + x * 4;
+                let big_idx = y * big_rgba_im.s + x * 4;
+                assert_eq!(
+                    &small_rgba_im.arr[small_idx..small_idx + 4],
+                    &big_rgba_im.arr[big_idx..big_idx + 4],
+                    "pixel mismatch at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn erode_small_hole() {
         let verts = circle_coords(16, 20.0, 20.0, 10.0);
         let mpoly: MPoly = MPoly::new(vec![ipath(verts)]);
 
         // Allocate RGBA 8-bit im
         let mut im = RGBAIm::new(120, 120);
-        mpoly.raster_edges(&mut im, |im, x, y| {
-            unsafe {
-                *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
-                *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
-                *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
-                *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
-            }
+        mpoly.raster_edges(&mut im, |im, x, y| unsafe {
+            *im.get_unchecked_mut(x as usize, y as usize, 0) = 255;
+            *im.get_unchecked_mut(x as usize, y as usize, 1) = 0;
+            *im.get_unchecked_mut(x as usize, y as usize, 2) = 0;
+            *im.get_unchecked_mut(x as usize, y as usize, 3) = 255;
         });
 
         let eroded = mpoly

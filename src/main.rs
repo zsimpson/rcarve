@@ -1,6 +1,8 @@
-use rcarve::desc::{parse_comp_json, PolyDesc};
+use rcarve::desc::{PlyDesc, PolyDesc, parse_comp_json};
+use rcarve::im::Im;
+use rcarve::im::label::{LabelInfo, label_im};
+use rcarve::mat3::Mat3;
 use rcarve::mpoly::{IntPath, IntPoint, MPoly};
-// use std::collections::HashSet;
 
 const TEST_JSON: &str = r#"
     {
@@ -37,7 +39,11 @@ const TEST_JSON: &str = r#"
                 "is_floor": false,
                 "mpoly": [
                     {
-                        "exterior": [40,40, 60,40, 60,60, 40,60],
+                        "exterior": [25,40, 35,40, 35,60, 25,60],
+                        "holes": []
+                    },
+                    {
+                        "exterior": [50,40, 55,40, 55,60, 50,60],
                         "holes": []
                     }
                 ]
@@ -76,11 +82,12 @@ const TEST_JSON: &str = r#"
     }
 "#;
 
-use rcarve::im::Im;
-pub type Sep16Im = Im<u16, 1>;
+type LabelVal = u16;
+type SepVal = u16;
+type SepIm = Im<SepVal, 1>;
 
-pub fn polydesc_to_mpoly(polydesc: &PolyDesc) -> MPoly {
-    fn flat_verts_to_path(flat: &[i32]) -> Option<IntPath> {
+pub fn polydesc_to_mpoly(polydesc: &PolyDesc, ply_xform: &Mat3) -> MPoly {
+    fn flat_verts_to_path(flat: &[i32], ply_xform: &Mat3) -> Option<IntPath> {
         // flat = [x0, y0, x1, y1, ...]
         // Need at least 3 points (6 ints).
         if flat.len() < 6 {
@@ -94,20 +101,19 @@ pub fn polydesc_to_mpoly(polydesc: &PolyDesc) -> MPoly {
 
         let mut pts: Vec<IntPoint> = Vec::with_capacity(n / 2);
         for xy in flat[..n].chunks_exact(2) {
-            let x = xy[0] as i64;
-            let y = xy[1] as i64;
-            pts.push(IntPoint::from_scaled(x, y));
+            let (x, y) = ply_xform.transform_point2(xy[0] as f64, xy[1] as f64);
+            pts.push(IntPoint::from_scaled(x.round() as i64, y.round() as i64));
         }
 
         Some(IntPath::new(pts))
     }
 
     let mut paths: Vec<IntPath> = Vec::with_capacity(1 + polydesc.holes.len());
-    if let Some(ext) = flat_verts_to_path(&polydesc.exterior) {
+    if let Some(ext) = flat_verts_to_path(&polydesc.exterior, ply_xform) {
         paths.push(ext);
     }
     for hole in &polydesc.holes {
-        if let Some(h) = flat_verts_to_path(hole) {
+        if let Some(h) = flat_verts_to_path(hole, ply_xform) {
             paths.push(h);
         }
     }
@@ -115,55 +121,77 @@ pub fn polydesc_to_mpoly(polydesc: &PolyDesc) -> MPoly {
     MPoly::new(paths)
 }
 
-
 fn main() {
+    let roi_l = 0_usize;
+    let roi_t = 0_usize;
+    let roi_r = 100_usize;
+    let roi_b = 100_usize;
+    let w = (roi_r - roi_l) as usize;
+    let h = (roi_b - roi_t) as usize;
+
+    let mut sep_im = SepIm::new(w, h);
+
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
-    println!("Parsed CompDesc: {:?}", comp_desc);
+    // println!("Parsed CompDesc: {:?}", comp_desc);
 
     // Iter the ply_descs, Keep the plies that are not hidden
     // (including heckig if their owner layer_desc is not hidden)
     // and then sort by top_thou descending.
-    let mut sorted_plies: Vec<_> = comp_desc
+    let mut sorted_ply_decsc: Vec<&PlyDesc> = comp_desc
         .ply_desc_by_guid
         .values()
-        .filter(|ply| {
-            if ply.hidden {
+        .filter(|ply_desc| {
+            if ply_desc.hidden {
                 return false;
             }
-            if let Some(layer) = comp_desc.layer_desc_by_guid.get(&ply.owner_layer_guid) {
+            if let Some(layer) = comp_desc.layer_desc_by_guid.get(&ply_desc.owner_layer_guid) {
                 return !layer.hidden;
             }
             true
         })
         .collect();
 
-    sorted_plies.sort_by(|a, b| b.top_thou.cmp(&a.top_thou));
+    sorted_ply_decsc.sort_by(|a, b| b.top_thou.cmp(&a.top_thou));
 
-    // New an Im that is 100x100 
-    let mut im = Sep16Im::new(100, 100);
-
-    // Raster each ply into the Im using its i as the value.
+    // From bottom to top, raster each ply into the Im using its i as the value.
     // Each ply contains a Vec<PolyDesc>; raster each polygon into the same label.
-    for (i, ply) in sorted_plies.iter().enumerate() {
+    // Note that .rev() is last so the i corresponds to the original index.
+    for (i, ply_desc) in sorted_ply_decsc.iter().enumerate().rev() {
         let value = (i as u16) + 1; // start from 1
 
-        for polydesc in &ply.mpoly {
-            let mpoly = polydesc_to_mpoly(polydesc);
+        let ply_xform = Mat3::from_ply_mat(&ply_desc.ply_mat)
+            .unwrap_or_default()
+            .then_translate(-(roi_l as f64), -(roi_t as f64));
+
+        for polydesc in &ply_desc.mpoly {
+            let mpoly = polydesc_to_mpoly(polydesc, &ply_xform);
             if mpoly.is_empty() {
                 continue;
             }
 
-            mpoly.raster(&mut im, |im, x_start, x_end, y| {
+            mpoly.raster(&mut sep_im, |sep_im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *im.get_unchecked_mut(x as usize, y as usize, 0) = value;
+                        *sep_im.get_unchecked_mut(x as usize, y as usize, 0) = value;
                     }
                 }
             });
         }
     }
 
-    im
-        .mul_const_clamp_max_inplace(20000)
-        .save_png("_test_output.png").expect("Failed to save PNG");
+    let (mut label_im, _label_infos): (Im<LabelVal, 1>, Vec<LabelInfo>) = label_im(&sep_im);
+
+    label_im
+        .pixels(|v, _i| {
+            *v = ((*v as u32) * 20000).min(65535) as u16;
+        })
+        .save_png("_label_im.png")
+        .expect("Failed to save PNG");
+
+    sep_im
+        .pixels(|v, _i| {
+            *v = ((*v as u32) * 20000).min(65535) as u16;
+        })
+        .save_png("_sep_im.png")
+        .expect("Failed to save PNG");
 }
