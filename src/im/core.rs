@@ -30,6 +30,43 @@ impl<T, const N_CH: usize> Im<T, N_CH> {
     }
 }
 
+// Pixel-wise arithmetic helpers (no external crates).
+// -----------------------------------------------------------------------------
+
+pub trait MulClampMax: Copy {
+    fn mul_clamp_max(self, rhs: Self) -> Self;
+}
+
+macro_rules! impl_mul_clamp_max_int {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl MulClampMax for $t {
+                #[inline(always)]
+                fn mul_clamp_max(self, rhs: Self) -> Self {
+                    self.checked_mul(rhs).unwrap_or(<$t>::MAX)
+                }
+            }
+        )*
+    };
+}
+
+impl_mul_clamp_max_int!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+
+impl<T: MulClampMax, const N_CH: usize> Im<T, N_CH> {
+    pub fn mul_const_clamp_max_inplace(&mut self, k: T) -> &mut Self {
+        for v in &mut self.arr {
+            *v = (*v).mul_clamp_max(k);
+        }
+        self
+    }
+
+    pub fn mul_const_clamp_max(&self, k: T) -> Self {
+        let mut out = self.clone();
+        out.mul_const_clamp_max_inplace(k);
+        out
+    }
+}
+
 // Convenience APIs that don't depend on external crates.
 // -----------------------------------------------------------------------------
 
@@ -72,5 +109,20 @@ pub fn copy_mask_im_to_rgba_im(src: &MaskIm, dst: &mut RGBAIm, r: u8, g: u8, b: 
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mul_const_clamp_max_u8_clamps_on_overflow() {
+        let mut im = Im::<u8, 1>::new(2, 1);
+        im.arr[0] = 200;
+        im.arr[1] = 10;
+
+        let out = im.mul_const_clamp_max(2);
+        assert_eq!(out.arr, vec![255, 20]);
     }
 }

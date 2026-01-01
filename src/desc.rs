@@ -1,9 +1,16 @@
 use serde::Deserialize;
+use std::fmt;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(transparent)]
 pub struct Guid(pub String);
+
+impl fmt::Display for Guid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
