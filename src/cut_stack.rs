@@ -12,6 +12,7 @@ macro_rules! newtype {
 
 newtype!(PlyI(u16));
 newtype!(PlyIm(Lum16Im));
+
 newtype!(RegionI(u16));
 newtype!(RegionIm(Lum16Im));
 
@@ -32,9 +33,6 @@ pub struct CutBand {
     pub bot_thou: Thou,
     pub cut_planes: Vec<CutPlane>,  // sorted top to bottom
 }
-
-
-
 
 pub fn create_cut_bands(
     cut_pass: &str,

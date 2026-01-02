@@ -140,15 +140,21 @@ fn main() {
                 continue;
             }
 
-            mpoly.raster(&mut ply_im, |sep_im, x_start, x_end, y| {
+            mpoly.raster(&mut ply_im, |ply_im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *sep_im.get_unchecked_mut(x as usize, y as usize, 0) = i as u16;
+                        *ply_im.get_unchecked_mut(x as usize, y as usize, 0) = i as u16;
                     }
                 }
             });
         }
     }
 
-    let (_region_im, _regions_infos): (Im<u16, 1>, Vec<rcarve::im::label::LabelInfo>) = label_im(&ply_im);
+    ply_im.debug_im("ply_im");
+
+    let (region_im, _regions_infos): (Im<u16, 1>, Vec<rcarve::im::label::LabelInfo>) = label_im(&ply_im);
+
+    region_im.debug_im("region_im");
+
+
 }

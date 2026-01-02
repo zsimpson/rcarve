@@ -8,16 +8,26 @@ image = { version = "0.25", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clipper2 = "0.5.3"
+eframe = { version = "0.27", optional = true }
 
 [features]
 # Keep current behavior by default (PNG IO + labeling compiled in).
-default = ["im-io", "im-label"]
+default = ["im-io", "im-label", "debug_ui"]
 
 # Optional PNG IO for Im.
 im-io = ["dep:image"]
 
 # Optional connected-component labeling utilities.
 im-label = []
+
+# Image debugging UI window (hover to read pixel values).
+debug_ui = ["dep:eframe"]
+
+# Compile without the debug UI (CLI-only builds). Note: Cargo features are additive,
+# so to avoid building UI deps you must also pass `--no-default-features`.
+#
+# This is intended to approximate "default features minus debug_ui".
+cli_only = ["im-io", "im-label"]
 
 # Work-in-progress cut planning/raster pipeline.
 cut-stack = []

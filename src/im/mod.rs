@@ -14,3 +14,9 @@ pub mod label;
 #[cfg(feature = "im-label")]
 #[allow(unused_imports)]
 pub use label::{label_im, LabelInfo};
+
+// Debug UI window
+// -----------------------------------------------------------------------------
+
+#[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
+pub mod debug_ui;

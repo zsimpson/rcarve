@@ -81,6 +81,74 @@ impl<T, const N_CH: usize, S> Im<T, N_CH, S> {
     }
 }
 
+// Debug image viewer (feature-gated).
+// -----------------------------------------------------------------------------
+
+impl<S> Im<u8, 1, S> {
+    /// Open a debug UI window showing this image.
+    ///
+    /// Enabled by default.
+    ///
+    /// To compile without the UI dependency: `cargo run --no-default-features --features cli_only`.
+    pub fn debug_im(&self, title: &str) {
+        #[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
+        {
+            if let Err(e) = super::debug_ui::show_u8_1(self, title) {
+                println!("debug_im: {e}");
+            }
+            return;
+        }
+        #[cfg(not(all(feature = "debug_ui", not(feature = "cli_only"))))]
+        {
+            let _ = title;
+            println!("debug_im: disabled (build without `--features cli_only`) ");
+        }
+    }
+}
+
+impl<S> Im<u8, 4, S> {
+    /// Open a debug UI window showing this image.
+    ///
+    /// Enabled by default.
+    ///
+    /// To compile without the UI dependency: `cargo run --no-default-features --features cli_only`.
+    pub fn debug_im(&self, title: &str) {
+        #[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
+        {
+            if let Err(e) = super::debug_ui::show_u8_4(self, title) {
+                println!("debug_im: {e}");
+            }
+            return;
+        }
+        #[cfg(not(all(feature = "debug_ui", not(feature = "cli_only"))))]
+        {
+            let _ = title;
+            println!("debug_im: disabled (build without `--features cli_only`) ");
+        }
+    }
+}
+
+impl<S> Im<u16, 1, S> {
+    /// Open a debug UI window showing this image.
+    ///
+    /// Display is downscaled for viewing (uses the high 8 bits), but hover readout
+    /// shows the full `u16` value.
+    pub fn debug_im(&self, title: &str) {
+        #[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
+        {
+            if let Err(e) = super::debug_ui::show_u16_1(self, title) {
+                println!("debug_im: {e}");
+            }
+            return;
+        }
+        #[cfg(not(all(feature = "debug_ui", not(feature = "cli_only"))))]
+        {
+            let _ = title;
+            println!("debug_im: disabled (build without `--features cli_only`) ");
+        }
+    }
+}
+
 // Convenience APIs that don't depend on external crates.
 // -----------------------------------------------------------------------------
 
