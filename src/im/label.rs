@@ -1,4 +1,5 @@
 use super::core::Im;
+use std::collections::HashMap;
 
 /// Flood-fill a connected component in a single-channel image.
 fn flood_im<SrcT, TarT, S>(
@@ -78,7 +79,7 @@ where
     filled
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct LabelInfo {
     pub size: usize,
     pub start_x: usize,
@@ -102,11 +103,7 @@ where
     let src_bg = SrcT::default();
 
     // group_info is indexed by group id (and [0] is reserved, do not use it!).
-    let mut group_info: Vec<LabelInfo> = vec![LabelInfo {
-        size: 0,
-        start_x: 0,
-        start_y: 0,
-    }];
+    let mut group_info: Vec<LabelInfo> = vec![LabelInfo::default()];
 
     let mut group_i: usize = 1;
     for y in 0..h {
@@ -145,12 +142,159 @@ where
     (dst_im, group_info)
 }
 
+pub type NeighborMap = Vec<HashMap<usize, usize>>;
+
+/// Build a per-label neighbor map from a labeled image.
+///
+/// For each pair of distinct, non-background labels `(a, b)`, the count is the
+/// number of pixels along the shared border between the two regions.
+///
+/// This is computed by first counting, for each direction, how many pixels in
+/// region `a` are 4-connected to at least one pixel in region `b`, then taking
+/// the symmetric value:
+///
+/// $$\text{shared}(a,b) = \min(\text{touch}(a\to b),\ \text{touch}(b\to a))$$
+///
+/// Pixels on the outer image edge are still counted normally; the only thing
+/// that does *not* count is the implicit neighbor "outside" the image.
+///
+/// The returned vector is indexed by label id, matching `group_info` from
+/// [`label_im`]. Index 0 is reserved/background and will always be empty.
+pub fn neighbor_map_from_labels<T, S>(
+    label_im: &Im<T, 1, S>,
+    group_info: &[LabelInfo],
+) -> NeighborMap
+where
+    T: Copy + Default + PartialEq + TryInto<usize>,
+{
+    let w = label_im.w;
+    let h = label_im.h;
+    let s = label_im.s;
+
+    let mut neighbors: NeighborMap = vec![HashMap::new(); group_info.len()];
+
+    // Empty or 1D images can't have any 4-connected cross-label borders.
+    if w == 0 || h == 0 || w == 1 || h == 1 {
+        return neighbors;
+    }
+
+    let bg = T::default();
+
+    for y in 0..h {
+        let row = y * s;
+        for x in 0..w {
+            let a = label_im.arr[row + x];
+            if a == bg {
+                continue;
+            }
+
+            let a_id: usize = a
+                .try_into()
+                .unwrap_or_else(|_| panic!("label value did not convert to usize"));
+            if a_id == 0 || a_id >= neighbors.len() {
+                continue;
+            }
+
+            // Collect unique neighboring label ids (max 4) for this pixel.
+            let mut n_ids: [usize; 4] = [0; 4];
+            let mut n_len = 0usize;
+            let mut consider = |b: T| {
+                if b == bg || b == a {
+                    return;
+                }
+                let b_id: usize = b
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("label value did not convert to usize"));
+                if b_id == 0 || b_id >= neighbors.len() {
+                    return;
+                }
+                for i in 0..n_len {
+                    if n_ids[i] == b_id {
+                        return;
+                    }
+                }
+                n_ids[n_len] = b_id;
+                n_len += 1;
+            };
+
+            if x + 1 < w {
+                consider(label_im.arr[row + x + 1]);
+            }
+            if x > 0 {
+                consider(label_im.arr[row + x - 1]);
+            }
+            if y + 1 < h {
+                consider(label_im.arr[(y + 1) * s + x]);
+            }
+            if y > 0 {
+                consider(label_im.arr[(y - 1) * s + x]);
+            }
+
+            for i in 0..n_len {
+                *neighbors[a_id].entry(n_ids[i]).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Symmetrize counts so the map represents a shared-border measure.
+    for a in 1..neighbors.len() {
+        let keys: Vec<usize> = neighbors[a].keys().copied().collect();
+        for b in keys {
+            if b <= a || b >= neighbors.len() {
+                continue;
+            }
+
+            let ab = neighbors[a].get(&b).copied().unwrap_or(0);
+            let ba = neighbors[b].get(&a).copied().unwrap_or(0);
+            let shared = ab.min(ba);
+
+            if shared == 0 {
+                neighbors[a].remove(&b);
+                neighbors[b].remove(&a);
+            } else {
+                neighbors[a].insert(b, shared);
+                neighbors[b].insert(a, shared);
+            }
+        }
+    }
+
+    neighbors
+}
+
 // Tests
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labels_from_ascii(grid: &str) -> Im<u16, 1> {
+        let rows: Vec<&str> = grid
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        let h = rows.len();
+        assert!(h > 0, "grid must have at least one non-empty row");
+        let w = rows[0].len();
+        assert!(w > 0, "grid rows must be non-empty");
+        for r in &rows {
+            assert_eq!(r.len(), w, "all rows must have equal length");
+        }
+
+        let mut im = Im::<u16, 1>::new(w, h);
+        for (y, row) in rows.iter().enumerate() {
+            for (x, ch) in row.chars().enumerate() {
+                let v = ch
+                    .to_digit(10)
+                    .unwrap_or_else(|| panic!("invalid label char '{ch}', expected digit"))
+                    as u16;
+                im.arr[y * im.s + x] = v;
+            }
+        }
+        im
+    }
 
     #[test]
     fn flood_im_fills_connected_component() {
@@ -236,4 +380,72 @@ mod tests {
         assert_eq!(dst.arr[idx(0, 0)], 0);
         assert_eq!(dst.arr[idx(3, 3)], 0);
     }
+
+    #[test]
+    fn neighbor_map_counts_shared_borders_and_ignores_outer_edge() {
+        // 5x5 label image. The outer edge is 0 (background), so it's not part of any region.
+        // Labels 1 and 2 touch along a 3-pixel vertical seam fully in the interior.
+        // Shared borders between (1,2): 3
+        let labels = labels_from_ascii(
+            r#"
+                00000
+                01120
+                01120
+                01120
+                00000
+            "#,
+        );
+
+        // group_info only needs correct length/indexing.
+        let group_info = vec![LabelInfo::default(); 3];
+
+        let neigh = neighbor_map_from_labels(&labels, &group_info);
+        assert_eq!(neigh.len(), 3);
+        assert_eq!(neigh[0].len(), 0);
+        assert_eq!(neigh[1].get(&2).copied(), Some(3));
+        assert_eq!(neigh[2].get(&1).copied(), Some(3));
+    }
+
+    #[test]
+    fn neighbor_map_counts_boundary_pixels_when_one_surrounds_another() {
+        // 5x5 label image where region 1 surrounds region 2.
+        // Each region has 8 boundary pixels touching the other.
+        let labels = labels_from_ascii(
+            r#"
+                11111
+                12221
+                12221
+                12221
+                11111
+            "#,
+        );
+
+        let group_info = vec![LabelInfo::default(); 3];
+        let neigh = neighbor_map_from_labels(&labels, &group_info);
+        assert_eq!(neigh[1].get(&2).copied(), Some(8));
+        assert_eq!(neigh[2].get(&1).copied(), Some(8));
+    }
+
+    #[test]
+    fn foo() {
+        let labels = labels_from_ascii(
+            r#"
+                11311
+                12221
+                12221
+                12221
+                11111
+            "#,
+        );
+
+        let group_info = vec![LabelInfo::default(); 4];
+        let neigh = neighbor_map_from_labels(&labels, &group_info);
+        println!("{:?}", neigh);
+        assert_eq!(neigh[1].get(&2).copied(), Some(7));
+        assert_eq!(neigh[1].get(&3).copied(), Some(1));
+        assert_eq!(neigh[2].get(&1).copied(), Some(7));
+        assert_eq!(neigh[2].get(&3).copied(), Some(1));
+        assert_eq!(neigh[3].get(&1).copied(), Some(1));
+        assert_eq!(neigh[3].get(&2).copied(), Some(1));
+    }    
 }
