@@ -11,6 +11,14 @@ pub struct Im<T, const N_CH: usize, S = ()> {
     _phantom: PhantomData<S>,
 }
 
+impl<T: PartialEq, const N_CH: usize, S> PartialEq for Im<T, N_CH, S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.w == other.w && self.h == other.h && self.s == other.s && self.arr == other.arr
+    }
+}
+
+impl<T: Eq, const N_CH: usize, S> Eq for Im<T, N_CH, S> {}
+
 pub struct Binary;
 pub struct Grayscale;
 pub struct Rgba;
@@ -37,6 +45,21 @@ impl<T: Copy + Default, const N_CH: usize, S> Im<T, N_CH, S> {
 }
 
 impl<T, const N_CH: usize, S> Im<T, N_CH, S> {
+    /// Change the semantic tag type parameter `S` without touching pixel data.
+    ///
+    /// This is useful when you want to treat the same underlying image buffer as a
+    /// different semantic type (e.g. `Im<u16, 1>` -> `Im<u16, 1, RegionI>`).
+    #[inline]
+    pub fn retag<S2>(self) -> Im<T, N_CH, S2> {
+        Im {
+            w: self.w,
+            h: self.h,
+            s: self.s,
+            arr: self.arr,
+            _phantom: PhantomData,
+        }
+    }
+
     #[inline(always)]
     pub unsafe fn get_unchecked(&self, x: usize, y: usize, ch: usize) -> &T {
         unsafe { self.arr.get_unchecked(y * self.s + x * N_CH + ch) }
