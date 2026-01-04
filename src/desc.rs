@@ -10,7 +10,15 @@ macro_rules! transparent_newtype {
     };
 }
 
-transparent_newtype!(Thou(i32));
+macro_rules! transparent_newtype_copy {
+    ($name:ident($inner:ty)) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub $inner);
+    };
+}
+
+transparent_newtype_copy!(Thou(i32));
 
 transparent_newtype!(Guid(String));
 impl fmt::Display for Guid {

@@ -1,6 +1,7 @@
+use rcarve::cut_stack::{create_cut_bands, create_region_tree, PlyIm, RegionI, RegionIm};
 use rcarve::desc::{parse_comp_json, Guid, PlyDesc, Thou};
-use rcarve::im::label::label_im;
-use rcarve::im::Im;
+use rcarve::im::label::{label_im, LabelInfo};
+use rcarve::toolpath::surface_tool_path_generation;
 
 const TEST_JSON: &str = r#"
     {
@@ -89,15 +90,12 @@ fn main() {
     let w = (roi_r - roi_l) as usize;
     let h = (roi_b - roi_t) as usize;
 
-    let mut ply_im: Im<u16, 1> = Im::new(w, h);
-
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
     // println!("Parsed CompDesc: {:?}", comp_desc);
 
-    // Iter the ply_descs, Keep the plies that are not hidden
-    // (including heckig if their owner layer_desc is not hidden)
-    // and then sort by top_thou descending.
-    let mut sorted_ply_descs: Vec<&PlyDesc> = comp_desc
+    // Keep plies that are not hidden (and whose layer is not hidden),
+    // then sort bottom-to-top so higher `top_thou` get higher ply indices.
+    let mut ply_descs: Vec<PlyDesc> = comp_desc
         .ply_desc_by_guid
         .values()
         .filter(|ply_desc| {
@@ -109,31 +107,31 @@ fn main() {
             }
             true
         })
+        .cloned()
         .collect();
 
-    sorted_ply_descs.sort_by(|a, b| b.top_thou.cmp(&a.top_thou));
+    ply_descs.sort_by(|a, b| a.top_thou.cmp(&b.top_thou));
 
-    // Prepend a dummy ply for background (value 0).
-    // This simplifies the rasterization loop below.
-    let dummy_ply = PlyDesc {
+    // Prepend a dummy ply for background (ply_i = 0).
+    // `create_cut_bands` expects this exact shape.
+    ply_descs.insert(
+        0,
+        PlyDesc {
         owner_layer_guid: Guid("".to_string()),
         guid: Guid("".to_string()),
-        top_thou: Thou(i32::MIN),
-        hidden: false,
+        top_thou: Thou(0),
+        hidden: true,
         is_floor: false,
         ply_mat: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         mpoly: Vec::new(),
-    };
-    sorted_ply_descs.insert(0, &dummy_ply);
+        },
+    );
 
-    // From bottom to top, raster each ply into the Im using its i as the value.
-    // Each ply contains a Vec<PolyDesc>; raster each polygon into the same label.
-    // Note that .rev() is last so the i corresponds to the original index.
-    for (i, ply_desc) in sorted_ply_descs.iter().enumerate().rev() {
-        if i == 0 {
-            // Dummy ply for background; skip.
-            continue;
-        }
+    let mut ply_im: PlyIm = PlyIm::new(w, h);
+
+    // From bottom to top, raster each ply into the image using its index as the value.
+    // Higher plies overwrite lower ones.
+    for (ply_i, ply_desc) in ply_descs.iter().enumerate().skip(1) {
         for mpoly in &ply_desc.mpoly {
             let mpoly = mpoly.translated(-(roi_l as i64), -(roi_t as i64));
             if mpoly.is_empty() {
@@ -143,17 +141,18 @@ fn main() {
             mpoly.raster(&mut ply_im, |ply_im, x_start, x_end, y| {
                 for x in x_start..x_end {
                     unsafe {
-                        *ply_im.get_unchecked_mut(x as usize, y as usize, 0) = i as u16;
+                        *ply_im.get_unchecked_mut(x as usize, y as usize, 0) = ply_i as u16;
                     }
                 }
             });
         }
     }
 
-    ply_im.debug_im("ply_im");
+    // ply_im.debug_im("ply_im");
 
-    let (region_im, region_infos): (Im<u16, 1>, Vec<rcarve::im::label::LabelInfo>) =
+    let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) =
         label_im(&ply_im);
+    let region_im: RegionIm = region_im_raw.retag::<RegionI>();
 
     // Print ROI/pixel/neighbors info (skip index 0).
     for (label_id, info) in region_infos.iter().enumerate().skip(1) {
@@ -172,7 +171,22 @@ fn main() {
         );
     }
 
-    region_im.debug_im("region_im");
+    // region_im.debug_im("region_im");
 
+    let cut_bands = create_cut_bands(
+        "rough",
+        &ply_im,
+        &comp_desc.bands,
+        &region_im,
+        &region_infos,
+        &ply_descs,
+    );
+
+    let region_root = create_region_tree(&cut_bands, &region_infos);
+
+    // Temporaily hard code the tool radius
+    let tool_radius_pix = 10_u32; // Pixels
+
+    let _surface_toolpath = surface_tool_path_generation(&region_root, tool_radius_pix);
 
 }
