@@ -1,6 +1,16 @@
 use super::core::Im;
 use std::collections::HashMap;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AabbRoi {
+    pub l: usize,
+    pub t: usize,
+    /// Exclusive right bound.
+    pub r: usize,
+    /// Exclusive bottom bound.
+    pub b: usize,
+}
+
 /// Flood-fill a connected component in a single-channel image.
 fn flood_im<SrcT, TarT, S>(
     src_im: &Im<SrcT, 1, S>,
@@ -8,7 +18,7 @@ fn flood_im<SrcT, TarT, S>(
     start_x: usize,
     start_y: usize,
     fill_val: TarT,
-) -> usize
+) -> (usize, Vec<usize>, AabbRoi)
 where
     SrcT: Copy + PartialEq,
     TarT: Copy,
@@ -29,6 +39,13 @@ where
     stack.push((start_x, start_y));
 
     let mut filled = 0usize;
+    let mut pixel_iz: Vec<usize> = Vec::new();
+    let mut roi = AabbRoi {
+        l: start_x,
+        t: start_y,
+        r: start_x + 1,
+        b: start_y + 1,
+    };
     while let Some((x, y)) = stack.pop() {
         let v_i = y * w + x;
         if visited[v_i] != 0 {
@@ -45,6 +62,13 @@ where
             *dst_im.get_unchecked_mut(x, y, 0) = fill_val;
         }
         filled += 1;
+
+        let im_i = y * src_im.s + x;
+        pixel_iz.push(im_i);
+        roi.l = roi.l.min(x);
+        roi.t = roi.t.min(y);
+        roi.r = roi.r.max(x + 1);
+        roi.b = roi.b.max(y + 1);
 
         if y + 1 < h {
             let ny = y + 1;
@@ -76,21 +100,26 @@ where
         }
     }
 
-    filled
+    pixel_iz.sort_unstable();
+
+    (filled, pixel_iz, roi)
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LabelInfo {
     pub size: usize,
     pub start_x: usize,
     pub start_y: usize,
+    pub roi: AabbRoi,
+    pub pixel_iz: Vec<usize>,
+    pub neighbors: HashMap<usize, usize>,
 }
 
 /// Label a single channel image's connected components.
 pub fn label_im<SrcT, TarT, S>(src_im: &Im<SrcT, 1, S>) -> (Im<TarT, 1>, Vec<LabelInfo>)
 where
     SrcT: Copy + Default + PartialEq,
-    TarT: Copy + Default + PartialEq + TryFrom<usize>,
+    TarT: Copy + Default + PartialEq + TryFrom<usize> + TryInto<usize>,
 {
     let w = src_im.w;
     let h = src_im.h;
@@ -125,7 +154,7 @@ where
                 .unwrap_or_else(|| panic!("label value overflow at group_i={group_i}"));
 
             // Use flood_im to write this label into dst for the whole connected region.
-            let filled = flood_im(src_im, &mut dst_im, x, y, label_val);
+            let (filled, pixel_iz, roi) = flood_im(src_im, &mut dst_im, x, y, label_val);
 
             // Ensure our table stays aligned with group ids.
             debug_assert_eq!(group_info.len(), group_i);
@@ -133,133 +162,106 @@ where
                 size: filled,
                 start_x: x,
                 start_y: y,
+                roi,
+                pixel_iz,
+                neighbors: HashMap::new(),
             });
 
             group_i += 1;
         }
     }
 
+    // Compute per-label neighbor shared-border counts from the finished label image.
+    // This is separate from the flood-fill so neighbors can be computed purely in label-space.
+    let mut neighbors: Vec<HashMap<usize, usize>> = vec![HashMap::new(); group_info.len()];
+    if w >= 2 && h >= 2 {
+        let bg = TarT::default();
+        for y in 0..h {
+            let row = y * dst_im.s;
+            for x in 0..w {
+                let a = dst_im.arr[row + x];
+                if a == bg {
+                    continue;
+                }
+
+                let a_id: usize = a
+                    .try_into()
+                    .unwrap_or_else(|_| panic!("label value did not convert to usize"));
+                if a_id == 0 || a_id >= neighbors.len() {
+                    continue;
+                }
+
+                // Collect unique neighboring label ids (max 4) for this pixel.
+                let mut n_ids: [usize; 4] = [0; 4];
+                let mut n_len = 0usize;
+                let mut consider = |b: TarT| {
+                    if b == bg || b == a {
+                        return;
+                    }
+                    let b_id: usize = b
+                        .try_into()
+                        .unwrap_or_else(|_| panic!("label value did not convert to usize"));
+                    if b_id == 0 || b_id >= neighbors.len() {
+                        return;
+                    }
+                    for i in 0..n_len {
+                        if n_ids[i] == b_id {
+                            return;
+                        }
+                    }
+                    n_ids[n_len] = b_id;
+                    n_len += 1;
+                };
+
+                if x + 1 < w {
+                    consider(dst_im.arr[row + x + 1]);
+                }
+                if x > 0 {
+                    consider(dst_im.arr[row + x - 1]);
+                }
+                if y + 1 < h {
+                    consider(dst_im.arr[(y + 1) * dst_im.s + x]);
+                }
+                if y > 0 {
+                    consider(dst_im.arr[(y - 1) * dst_im.s + x]);
+                }
+
+                for i in 0..n_len {
+                    *neighbors[a_id].entry(n_ids[i]).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Symmetrize counts so the map represents a shared-border measure.
+        for a in 1..neighbors.len() {
+            let keys: Vec<usize> = neighbors[a].keys().copied().collect();
+            for b in keys {
+                if b <= a || b >= neighbors.len() {
+                    continue;
+                }
+
+                let ab = neighbors[a].get(&b).copied().unwrap_or(0);
+                let ba = neighbors[b].get(&a).copied().unwrap_or(0);
+                let shared = ab.min(ba);
+
+                if shared == 0 {
+                    neighbors[a].remove(&b);
+                    neighbors[b].remove(&a);
+                } else {
+                    neighbors[a].insert(b, shared);
+                    neighbors[b].insert(a, shared);
+                }
+            }
+        }
+    }
+
+    for a in 1..group_info.len() {
+        group_info[a].neighbors = std::mem::take(&mut neighbors[a]);
+    }
+
     (dst_im, group_info)
 }
 
-pub type NeighborMap = Vec<HashMap<usize, usize>>;
-
-/// Build a per-label neighbor map from a labeled image.
-///
-/// For each pair of distinct, non-background labels `(a, b)`, the count is the
-/// number of pixels along the shared border between the two regions.
-///
-/// This is computed by first counting, for each direction, how many pixels in
-/// region `a` are 4-connected to at least one pixel in region `b`, then taking
-/// the symmetric value:
-///
-/// $$\text{shared}(a,b) = \min(\text{touch}(a\to b),\ \text{touch}(b\to a))$$
-///
-/// Pixels on the outer image edge are still counted normally; the only thing
-/// that does *not* count is the implicit neighbor "outside" the image.
-///
-/// The returned vector is indexed by label id, matching `group_info` from
-/// [`label_im`]. Index 0 is reserved/background and will always be empty.
-pub fn neighbor_map_from_labels<T, S>(
-    label_im: &Im<T, 1, S>,
-    group_info: &[LabelInfo],
-) -> NeighborMap
-where
-    T: Copy + Default + PartialEq + TryInto<usize>,
-{
-    let w = label_im.w;
-    let h = label_im.h;
-    let s = label_im.s;
-
-    let mut neighbors: NeighborMap = vec![HashMap::new(); group_info.len()];
-
-    // Empty or 1D images can't have any 4-connected cross-label borders.
-    if w == 0 || h == 0 || w == 1 || h == 1 {
-        return neighbors;
-    }
-
-    let bg = T::default();
-
-    for y in 0..h {
-        let row = y * s;
-        for x in 0..w {
-            let a = label_im.arr[row + x];
-            if a == bg {
-                continue;
-            }
-
-            let a_id: usize = a
-                .try_into()
-                .unwrap_or_else(|_| panic!("label value did not convert to usize"));
-            if a_id == 0 || a_id >= neighbors.len() {
-                continue;
-            }
-
-            // Collect unique neighboring label ids (max 4) for this pixel.
-            let mut n_ids: [usize; 4] = [0; 4];
-            let mut n_len = 0usize;
-            let mut consider = |b: T| {
-                if b == bg || b == a {
-                    return;
-                }
-                let b_id: usize = b
-                    .try_into()
-                    .unwrap_or_else(|_| panic!("label value did not convert to usize"));
-                if b_id == 0 || b_id >= neighbors.len() {
-                    return;
-                }
-                for i in 0..n_len {
-                    if n_ids[i] == b_id {
-                        return;
-                    }
-                }
-                n_ids[n_len] = b_id;
-                n_len += 1;
-            };
-
-            if x + 1 < w {
-                consider(label_im.arr[row + x + 1]);
-            }
-            if x > 0 {
-                consider(label_im.arr[row + x - 1]);
-            }
-            if y + 1 < h {
-                consider(label_im.arr[(y + 1) * s + x]);
-            }
-            if y > 0 {
-                consider(label_im.arr[(y - 1) * s + x]);
-            }
-
-            for i in 0..n_len {
-                *neighbors[a_id].entry(n_ids[i]).or_insert(0) += 1;
-            }
-        }
-    }
-
-    // Symmetrize counts so the map represents a shared-border measure.
-    for a in 1..neighbors.len() {
-        let keys: Vec<usize> = neighbors[a].keys().copied().collect();
-        for b in keys {
-            if b <= a || b >= neighbors.len() {
-                continue;
-            }
-
-            let ab = neighbors[a].get(&b).copied().unwrap_or(0);
-            let ba = neighbors[b].get(&a).copied().unwrap_or(0);
-            let shared = ab.min(ba);
-
-            if shared == 0 {
-                neighbors[a].remove(&b);
-                neighbors[b].remove(&a);
-            } else {
-                neighbors[a].insert(b, shared);
-                neighbors[b].insert(a, shared);
-            }
-        }
-    }
-
-    neighbors
-}
 
 // Tests
 // -----------------------------------------------------------------------------
@@ -313,7 +315,7 @@ mod tests {
 
         let mut dst = Im::<u16, 1>::new(DIM, DIM);
 
-        let filled = flood_im(&src, &mut dst, 0, 0, 1234u16);
+        let (filled, _pixel_iz, _roi) = flood_im(&src, &mut dst, 0, 0, 1234u16);
         assert_eq!(filled, 4);
 
         // Filled component
@@ -351,22 +353,17 @@ mod tests {
         assert_eq!(groups.len(), 3);
 
         // Scan order is row-major (y then x), so the first group starts at (4,0).
-        assert_eq!(
-            groups[1],
-            LabelInfo {
-                size: 2,
-                start_x: 4,
-                start_y: 0
-            }
-        );
-        assert_eq!(
-            groups[2],
-            LabelInfo {
-                size: 4,
-                start_x: 1,
-                start_y: 1
-            }
-        );
+        assert_eq!(groups[1].size, 2);
+        assert_eq!(groups[1].start_x, 4);
+        assert_eq!(groups[1].start_y, 0);
+        assert_eq!(groups[1].roi, AabbRoi { l: 4, t: 0, r: 6, b: 1 });
+        assert_eq!(groups[1].pixel_iz.len(), 2);
+
+        assert_eq!(groups[2].size, 4);
+        assert_eq!(groups[2].start_x, 1);
+        assert_eq!(groups[2].start_y, 1);
+        assert_eq!(groups[2].roi, AabbRoi { l: 1, t: 1, r: 3, b: 3 });
+        assert_eq!(groups[2].pixel_iz.len(), 4);
 
         // Verify labels were written into dst with group ids.
         assert_eq!(dst.arr[idx(4, 0)], 1);
@@ -396,14 +393,24 @@ mod tests {
             "#,
         );
 
-        // group_info only needs correct length/indexing.
-        let group_info = vec![LabelInfo::default(); 3];
+        let (dst, infos): (Im<u16, 1>, Vec<LabelInfo>) = label_im(&labels);
+        assert_eq!(infos.len(), 3);
 
-        let neigh = neighbor_map_from_labels(&labels, &group_info);
-        assert_eq!(neigh.len(), 3);
-        assert_eq!(neigh[0].len(), 0);
-        assert_eq!(neigh[1].get(&2).copied(), Some(3));
-        assert_eq!(neigh[2].get(&1).copied(), Some(3));
+        // Map original src values -> new label ids.
+        let mut id_by_src: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+        for (id, info) in infos.iter().enumerate().skip(1) {
+            let src_v = labels.arr[info.start_y * labels.s + info.start_x];
+            id_by_src.insert(src_v, id);
+        }
+        let id1 = *id_by_src.get(&1).unwrap();
+        let id2 = *id_by_src.get(&2).unwrap();
+
+        // Sanity: dst should contain both ids somewhere.
+        assert!(dst.arr.iter().any(|&v| v as usize == id1));
+        assert!(dst.arr.iter().any(|&v| v as usize == id2));
+
+        assert_eq!(infos[id1].neighbors.get(&id2).copied(), Some(3));
+        assert_eq!(infos[id2].neighbors.get(&id1).copied(), Some(3));
     }
 
     #[test]
@@ -420,10 +427,19 @@ mod tests {
             "#,
         );
 
-        let group_info = vec![LabelInfo::default(); 3];
-        let neigh = neighbor_map_from_labels(&labels, &group_info);
-        assert_eq!(neigh[1].get(&2).copied(), Some(8));
-        assert_eq!(neigh[2].get(&1).copied(), Some(8));
+        let (_dst, infos): (Im<u16, 1>, Vec<LabelInfo>) = label_im(&labels);
+        assert_eq!(infos.len(), 3);
+
+        let mut id_by_src: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+        for (id, info) in infos.iter().enumerate().skip(1) {
+            let src_v = labels.arr[info.start_y * labels.s + info.start_x];
+            id_by_src.insert(src_v, id);
+        }
+        let id1 = *id_by_src.get(&1).unwrap();
+        let id2 = *id_by_src.get(&2).unwrap();
+
+        assert_eq!(infos[id1].neighbors.get(&id2).copied(), Some(8));
+        assert_eq!(infos[id2].neighbors.get(&id1).copied(), Some(8));
     }
 
     #[test]
@@ -438,14 +454,55 @@ mod tests {
             "#,
         );
 
-        let group_info = vec![LabelInfo::default(); 4];
-        let neigh = neighbor_map_from_labels(&labels, &group_info);
-        println!("{:?}", neigh);
-        assert_eq!(neigh[1].get(&2).copied(), Some(7));
-        assert_eq!(neigh[1].get(&3).copied(), Some(1));
-        assert_eq!(neigh[2].get(&1).copied(), Some(7));
-        assert_eq!(neigh[2].get(&3).copied(), Some(1));
-        assert_eq!(neigh[3].get(&1).copied(), Some(1));
-        assert_eq!(neigh[3].get(&2).copied(), Some(1));
+        let (_dst, infos): (Im<u16, 1>, Vec<LabelInfo>) = label_im(&labels);
+        assert_eq!(infos.len(), 4);
+
+        let mut id_by_src: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+        for (id, info) in infos.iter().enumerate().skip(1) {
+            let src_v = labels.arr[info.start_y * labels.s + info.start_x];
+            id_by_src.insert(src_v, id);
+        }
+        let id1 = *id_by_src.get(&1).unwrap();
+        let id2 = *id_by_src.get(&2).unwrap();
+        let id3 = *id_by_src.get(&3).unwrap();
+
+        assert_eq!(infos[id1].neighbors.get(&id2).copied(), Some(7));
+        assert_eq!(infos[id1].neighbors.get(&id3).copied(), Some(1));
+        assert_eq!(infos[id2].neighbors.get(&id1).copied(), Some(7));
+        assert_eq!(infos[id2].neighbors.get(&id3).copied(), Some(1));
+        assert_eq!(infos[id3].neighbors.get(&id1).copied(), Some(1));
+        assert_eq!(infos[id3].neighbors.get(&id2).copied(), Some(1));
     }    
+
+    #[test]
+    fn build_maps_tracks_pixels_and_aabb() {
+        // Two labels in a 4x3 image.
+        // Label 1 occupies (0,0), (1,0), (0,1)
+        // Label 2 occupies (3,2)
+        let labels = labels_from_ascii(
+            r#"
+                1100
+                1000
+                0002
+            "#,
+        );
+
+        let (_dst, infos): (Im<u16, 1>, Vec<LabelInfo>) = label_im(&labels);
+        assert_eq!(infos.len(), 3);
+
+        let mut id_by_src: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
+        for (id, info) in infos.iter().enumerate().skip(1) {
+            let src_v = labels.arr[info.start_y * labels.s + info.start_x];
+            id_by_src.insert(src_v, id);
+        }
+        let id1 = *id_by_src.get(&1).unwrap();
+        let id2 = *id_by_src.get(&2).unwrap();
+
+        // Pixel indices are `s*y + x` where `s == w == 4`.
+        assert_eq!(infos[id1].pixel_iz, vec![0, 1, 4]);
+        assert_eq!(infos[id1].roi, AabbRoi { l: 0, t: 0, r: 2, b: 2 });
+
+        assert_eq!(infos[id2].pixel_iz, vec![2 * 4 + 3]);
+        assert_eq!(infos[id2].roi, AabbRoi { l: 3, t: 2, r: 4, b: 3 });
+    }
 }

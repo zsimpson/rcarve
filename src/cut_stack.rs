@@ -3,7 +3,6 @@ use crate::desc::{Guid, Thou};
 use crate::im::Im;
 use crate::im::MaskIm;
 use crate::im::label::LabelInfo;
-use crate::im::label::NeighborMap;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -388,7 +387,7 @@ pub enum RegionNode {
 ///
 /// This matches the semantics: the union of all pixels below a band must be cut (the floor)
 /// before *any* region in lower bands can be cut.
-pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -> RegionTree {
+pub fn create_region_tree(cut_bands: Vec<CutBand>, region_infos: &[LabelInfo]) -> RegionTree {
     if cut_bands.is_empty() {
         return RegionTree {
             cut_bands,
@@ -397,8 +396,8 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -
     }
 
     assert!(
-        !neighbor_map.is_empty(),
-        "neighbor_map must include index 0 (reserved/background)"
+        !region_infos.is_empty(),
+        "region_infos must include index 0 (reserved/background)"
     );
 
     let mut nodes_per_band: Vec<Vec<RegionNode>> = Vec::with_capacity(cut_bands.len());
@@ -415,7 +414,7 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -
 
     // region_top_thou[r] is the top_thou for the CutPlane that owns region r.
     // Index 0 is reserved/background.
-    let mut region_top_thou: Vec<Option<Thou>> = vec![None; neighbor_map.len()];
+    let mut region_top_thou: Vec<Option<Thou>> = vec![None; region_infos.len()];
     for band in &cut_bands {
         for cut_plane in &band.cut_planes {
             if cut_plane.is_floor {
@@ -458,7 +457,7 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -
 
         // Build 1+ floor nodes for this band by finding the connected components of the
         // region-adjacency graph restricted to regions strictly below this band's floor.
-        let mut is_below: Vec<bool> = vec![false; neighbor_map.len()];
+        let mut is_below: Vec<bool> = vec![false; region_infos.len()];
         for region_id in 1..region_top_thou.len() {
             if let Some(thou) = &region_top_thou[region_id] {
                 if thou.0 < band.bot_thou.0 {
@@ -467,10 +466,10 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -
             }
         }
 
-        let mut visited_region_iz: Vec<bool> = vec![false; neighbor_map.len()];
+        let mut visited_region_iz: Vec<bool> = vec![false; region_infos.len()];
         let mut floor_region_iz: Vec<Vec<RegionI>> = Vec::new();
 
-        for start in 1..neighbor_map.len() {
+        for start in 1..region_infos.len() {
             if !is_below[start] || visited_region_iz[start] {
                 continue;
             }
@@ -480,8 +479,8 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -
             let mut flooded_region_iz: Vec<RegionI> = Vec::new();
             while let Some(cur) = stack.pop() {
                 flooded_region_iz.push(RegionI(cur as u16));
-                for (&n, _shared_border) in neighbor_map[cur].iter() {
-                    if n == 0 || n >= neighbor_map.len() {
+                for (&n, _shared_border) in region_infos[cur].neighbors.iter() {
+                    if n == 0 || n >= region_infos.len() {
                         continue;
                     }
                     if !is_below[n] || visited_region_iz[n] {
@@ -663,7 +662,7 @@ pub fn debug_print_region_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::im::label::{label_im, neighbor_map_from_labels};
+    use crate::im::label::label_im;
 
     #[allow(dead_code)]
     fn im_u16_to_ascii<S>(im: &Im<u16, 1, S>) -> String {
@@ -771,7 +770,7 @@ mod tests {
         // Region labeling isn't relevant to the band-splitting behavior being tested here,
         // so pass an empty label set.
         let region_im = RegionIm::new(ply_im.w, ply_im.h);
-        let region_infos: Vec<LabelInfo> = Vec::new();
+        let region_infos: Vec<LabelInfo> = vec![LabelInfo::default()];
 
         let cut_bands = create_cut_bands(
             "rough",
@@ -848,7 +847,7 @@ mod tests {
         ];
 
         let region_im = RegionIm::new(ply_im.w, ply_im.h);
-        let region_infos: Vec<LabelInfo> = Vec::new();
+        let region_infos: Vec<LabelInfo> = vec![LabelInfo::default()];
 
         let cut_bands = create_cut_bands(
             "rough",
@@ -859,10 +858,7 @@ mod tests {
             &ply_descs,
         );
 
-        // No labeled regions in this test, so the neighbor graph is empty.
-        // Still, create_region_tree expects a NeighborMap with a reserved/background entry at index 0.
-        let neighbor_map: NeighborMap = vec![std::collections::HashMap::new(); 1];
-        let tree = create_region_tree(cut_bands, &neighbor_map);
+        let tree = create_region_tree(cut_bands, &region_infos);
         assert_eq!(tree.roots.len(), 1, "tree should have a single Root node");
 
         match &tree.roots[0] {
@@ -959,8 +955,6 @@ mod tests {
             &ply_descs,
         );
 
-        let neighbor_map = neighbor_map_from_labels(&region_im, &region_infos);
-
         // Ensure create_cut_bands attached the right number of regions to each ply.
         let mut region_counts_by_ply_i: std::collections::HashMap<u16, usize> =
             std::collections::HashMap::new();
@@ -977,7 +971,7 @@ mod tests {
         assert_eq!(region_counts_by_ply_i.get(&3).copied(), Some(1));
         assert_eq!(region_counts_by_ply_i.get(&4).copied(), Some(1));
 
-        let region_tree = create_region_tree(cut_bands, &neighbor_map);
+        let region_tree = create_region_tree(cut_bands, &region_infos);
 
         assert_eq!(region_tree.roots.len(), 1);
         let root_children = match &region_tree.roots[0] {

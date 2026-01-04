@@ -152,7 +152,25 @@ fn main() {
 
     ply_im.debug_im("ply_im");
 
-    let (region_im, _regions_infos): (Im<u16, 1>, Vec<rcarve::im::label::LabelInfo>) = label_im(&ply_im);
+    let (region_im, region_infos): (Im<u16, 1>, Vec<rcarve::im::label::LabelInfo>) =
+        label_im(&ply_im);
+
+    // Print ROI/pixel/neighbors info (skip index 0).
+    for (label_id, info) in region_infos.iter().enumerate().skip(1) {
+        println!(
+            "Label {}: size={}, start=({},{}), roi=({},{})->({},{}) px_count={} neigh_count={}",
+            label_id,
+            info.size,
+            info.start_x,
+            info.start_y,
+            info.roi.l,
+            info.roi.t,
+            info.roi.r,
+            info.roi.b,
+            info.pixel_iz.len(),
+            info.neighbors.len()
+        );
+    }
 
     region_im.debug_im("region_im");
 
