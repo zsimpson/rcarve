@@ -3,7 +3,9 @@ use crate::desc::{Guid, Thou};
 use crate::im::Im;
 use crate::im::MaskIm;
 use crate::im::label::LabelInfo;
+use crate::im::label::NeighborMap;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 macro_rules! newtype {
     ($name:ident($inner:ty)) => {
@@ -171,9 +173,17 @@ pub fn create_cut_bands(
     band_descs: &[BandDesc], // All band descriptions (will be filtered by cut_pass), gives thou ranges for each (will be cloned into CutBand)
     region_im: &RegionIm,    // The labeled connected component image from labeling the ply_im
     region_infos: &[LabelInfo], // The connected component infos from labeling the ply_im
-    ply_descs: &Vec<PlyDesc>, // All ply descriptions, indexed by ply_i (sorted bottom to top)
+    ply_descs: &Vec<PlyDesc>, // All ply descriptions, indexed by ply_i (sorted bottom to top). Skip the [0] dummy
 ) -> Vec<CutBand> {
     let _ = region_im;
+
+    // Assert that the ply_desc[0] is a dummy
+    assert!(
+        ply_descs
+            .get(0)
+            .map_or(false, |pd| pd.top_thou.0 == 0 && pd.hidden),
+        "ply_descs[0] must be a dummy ply with top_thou 0 and hidden=true"
+    );
 
     let mut cut_bands: Vec<CutBand> = band_descs
         .iter()
@@ -188,6 +198,11 @@ pub fn create_cut_bands(
 
     // Create the CutPlanes by iterating the ply_descs
     for (ply_i_usize, ply_desc) in ply_descs.iter().enumerate() {
+        // Skip dummy
+        if ply_i_usize == 0 {
+            continue;
+        }
+
         let ply_i = PlyI(ply_i_usize as u16);
         let thou = &ply_desc.top_thou;
 
@@ -251,6 +266,17 @@ pub fn create_cut_bands(
                 _ => b.top_thou.0.cmp(&a.top_thou.0),
             }
         });
+
+        // Enforce invariants used by downstream consumers (e.g. create_region_tree).
+        assert!(
+            band.cut_planes.last().is_some_and(|cp| cp.is_floor),
+            "invariant: floor CutPlane must be the last cut_plane in each CutBand"
+        );
+        debug_assert_eq!(
+            band.cut_planes.iter().filter(|cp| cp.is_floor).count(),
+            1,
+            "invariant: each CutBand must contain exactly one floor CutPlane"
+        );
     }
 
     // Now assign region_iz to each CutPlane by scanning the region_info
@@ -314,7 +340,6 @@ pub fn debug_print_cut_bands(cut_bands: &Vec<CutBand>) {
     }
 }
 
-
 /// The goal of this module is to build the sorted tree of region nodes.
 /// This requires a call to create_cut_bands() which creates the CutBands and CutPlanes
 /// and then a call to build_cut_region_tree() which renders the product (dilation, masking, etc)
@@ -323,17 +348,26 @@ pub fn debug_print_cut_bands(cut_bands: &Vec<CutBand>) {
 // Siblings are represented by ordering within a Vec in the parent.
 
 pub struct RegionTree {
-    pub cut_bands: Vec<CutBand>,
+    pub cut_bands: Vec<CutBand>, // Becomes the owner
     pub roots: Vec<RegionNode>,
 }
 
 #[derive(Clone, Debug)]
 pub enum RegionNode {
+    /// A synthetic single entry point for the whole tree.
+    ///
+    /// This avoids representing the top band as a "forest" of sibling nodes at the API boundary.
+    Root { children: Vec<RegionNode> },
     /// A floor node gates access to deeper bands.
     /// Cutting the floor reveals its children, which are 1+ regions in lower bands.
     Floor {
         band_i: usize,
         cut_plane_i: usize,
+        /// The connected set of region labels that make up this floor component.
+        ///
+        /// This is computed from the region neighbor graph restricted to the regions
+        /// that are strictly below this band's floor (i.e. in lower bands).
+        region_iz: Vec<RegionI>,
         children: Vec<RegionNode>,
     },
     /// A leaf region to cut (a single connected component at a specific ply in a band).
@@ -344,15 +378,17 @@ pub enum RegionNode {
     },
 }
 
+/// A RegionNode represents a single region. But the Floor nodes are special, they represent the union multiple regions below them. Many of those child regions will be contiguous but sometimes there mught be discontiguous parts. In the discontiguous case there'd be more than one floor RegionNode in a given band. So I need to rethink how to model this,. I'm thinknig that in create_region_tree in each band I make a new maskIm for each floor by using the ply_im to extrqact all pixels where the ply_i < the smallest ply_i of the current band. Then we call label on
+
 /// Create a region tree for depth-first traversal.
 ///
 /// This is intentionally minimal for now:
-/// - Each band contributes a list of nodes (siblings): one Floor node plus zero or more Cut leaves.
-/// - A band's Floor node has children equal to the entire next band's node list.
+/// - Each band contributes a list of nodes (siblings): zero or more Cut leaves plus 1+ Floor nodes.
+/// - Floor nodes represent connected components of the "below this band" region set.
 ///
 /// This matches the semantics: the union of all pixels below a band must be cut (the floor)
 /// before *any* region in lower bands can be cut.
-pub fn create_region_tree(cut_bands: Vec<CutBand>) -> RegionTree {
+pub fn create_region_tree(cut_bands: Vec<CutBand>, neighbor_map: &NeighborMap) -> RegionTree {
     if cut_bands.is_empty() {
         return RegionTree {
             cut_bands,
@@ -360,30 +396,59 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>) -> RegionTree {
         };
     }
 
-    let mut band_nodes: Vec<Vec<RegionNode>> = Vec::with_capacity(cut_bands.len());
+    assert!(
+        !neighbor_map.is_empty(),
+        "neighbor_map must include index 0 (reserved/background)"
+    );
 
-    // TODO: Just enforce that floor are the last cut_plane in each band?
+    let mut nodes_per_band: Vec<Vec<RegionNode>> = Vec::with_capacity(cut_bands.len());
+
+    // Assert that the bands are in top to bottom order (descending top_thou)
+    for band_i in 0..cut_bands.len().saturating_sub(1) {
+        let band_top = &cut_bands[band_i].top_thou;
+        let next_band_top = &cut_bands[band_i + 1].top_thou;
+        assert!(
+            band_top > next_band_top,
+            "invariant: cut_bands must be sorted from top to bottom by top_thou"
+        );
+    }
+
+    // region_top_thou[r] is the top_thou for the CutPlane that owns region r.
+    // Index 0 is reserved/background.
+    let mut region_top_thou: Vec<Option<Thou>> = vec![None; neighbor_map.len()];
+    for band in &cut_bands {
+        for cut_plane in &band.cut_planes {
+            if cut_plane.is_floor {
+                continue;
+            }
+            for &region_i in &cut_plane.region_iz {
+                let ri = region_i.0 as usize;
+                if ri == 0 || ri >= region_top_thou.len() {
+                    continue;
+                }
+                region_top_thou[ri] = Some(cut_plane.top_thou.clone());
+            }
+        }
+    }
 
     for (band_i, band) in cut_bands.iter().enumerate() {
         let floor_plane_i = band
             .cut_planes
-            .iter()
-            .position(|cp| cp.is_floor)
-            .expect("each CutBand must contain exactly one floor CutPlane");
+            .len()
+            .checked_sub(1)
+            .expect("each CutBand must contain at least one CutPlane (the floor)");
+        assert!(
+            band.cut_planes[floor_plane_i].is_floor,
+            "invariant: the floor CutPlane must be the last cut_plane in each CutBand"
+        );
 
-        let mut nodes: Vec<RegionNode> = Vec::new();
-        nodes.push(RegionNode::Floor {
-            band_i,
-            cut_plane_i: floor_plane_i,
-            children: Vec::new(),
-        });
-
+        let mut nodes_within_band: Vec<RegionNode> = Vec::new();
         for (cut_plane_i, cut_plane) in band.cut_planes.iter().enumerate() {
             if cut_plane.is_floor {
                 continue;
             }
             for &region_i in &cut_plane.region_iz {
-                nodes.push(RegionNode::Cut {
+                nodes_within_band.push(RegionNode::Cut {
                     band_i,
                     cut_plane_i,
                     region_i,
@@ -391,50 +456,214 @@ pub fn create_region_tree(cut_bands: Vec<CutBand>) -> RegionTree {
             }
         }
 
-        band_nodes.push(nodes);
+        // Build 1+ floor nodes for this band by finding the connected components of the
+        // region-adjacency graph restricted to regions strictly below this band's floor.
+        let mut is_below: Vec<bool> = vec![false; neighbor_map.len()];
+        for region_id in 1..region_top_thou.len() {
+            if let Some(thou) = &region_top_thou[region_id] {
+                if thou.0 < band.bot_thou.0 {
+                    is_below[region_id] = true;
+                }
+            }
+        }
+
+        let mut visited_region_iz: Vec<bool> = vec![false; neighbor_map.len()];
+        let mut floor_region_iz: Vec<Vec<RegionI>> = Vec::new();
+
+        for start in 1..neighbor_map.len() {
+            if !is_below[start] || visited_region_iz[start] {
+                continue;
+            }
+
+            let mut stack: Vec<usize> = vec![start];
+            visited_region_iz[start] = true;
+            let mut flooded_region_iz: Vec<RegionI> = Vec::new();
+            while let Some(cur) = stack.pop() {
+                flooded_region_iz.push(RegionI(cur as u16));
+                for (&n, _shared_border) in neighbor_map[cur].iter() {
+                    if n == 0 || n >= neighbor_map.len() {
+                        continue;
+                    }
+                    if !is_below[n] || visited_region_iz[n] {
+                        continue;
+                    }
+                    visited_region_iz[n] = true;
+                    stack.push(n);
+                }
+            }
+
+            flooded_region_iz.sort_by(|a, b| a.0.cmp(&b.0));
+            floor_region_iz.push(flooded_region_iz);
+        }
+
+        // Degenerate case: if there are no regions below this band, still create a single
+        // floor node so traversal remains structurally uniform.
+        if floor_region_iz.is_empty() {
+            floor_region_iz.push(Vec::new());
+        }
+
+        for region_iz in floor_region_iz {
+            nodes_within_band.push(RegionNode::Floor {
+                band_i,
+                cut_plane_i: floor_plane_i,
+                region_iz,
+                children: Vec::new(),
+            });
+        }
+
+        nodes_per_band.push(nodes_within_band);
     }
 
     // Nest bands by wiring each band's floor children to the entire next band's nodes.
-    for band_i in (0..band_nodes.len().saturating_sub(1)).rev() {
-        let children = std::mem::take(&mut band_nodes[band_i + 1]);  // TODO explain
-        let floor_node = band_nodes[band_i]
-            .get_mut(0)
-            .expect("each band node list must contain a floor node");
-        match floor_node {
-            RegionNode::Floor { children: c, .. } => {
-                *c = children;
+    for band_i in (0..nodes_per_band.len().saturating_sub(1)).rev() {
+        // Move (not clone) the entire next band's nodes into this band's floor's children.
+        // `std::mem::take` replaces the Vec with an empty one, letting us transfer ownership
+        // while preserving the overall `nodes_per_band` structure during the reverse pass.
+        let next_band_nodes = std::mem::take(&mut nodes_per_band[band_i + 1]);
+
+        // Find the contiguous "floors" suffix in the parent band node list.
+        let parent_nodes = &mut nodes_per_band[band_i];
+        let first_floor_i = parent_nodes
+            .iter()
+            .position(|n| matches!(n, RegionNode::Floor { .. }))
+            .expect("each band node list must contain at least one floor node");
+        assert!(
+            parent_nodes[first_floor_i..]
+                .iter()
+                .all(|n| matches!(n, RegionNode::Floor { .. })),
+            "invariant: floor nodes must be contiguous at the end of each band"
+        );
+
+        let parent_floors_len = parent_nodes.len() - first_floor_i;
+        assert!(parent_floors_len > 0);
+
+        // Map region label -> which parent floor component it belongs to.
+        // In the degenerate case (no below regions), the single floor has an empty `region_iz`,
+        // and we route everything to that sole floor.
+        let mut region_to_floor: HashMap<usize, usize> = HashMap::new();
+        for (floor_off, node) in parent_nodes[first_floor_i..].iter().enumerate() {
+            let RegionNode::Floor { region_iz, .. } = node else {
+                unreachable!("checked floors suffix");
+            };
+            for r in region_iz {
+                region_to_floor.insert(r.0 as usize, floor_off);
             }
-            RegionNode::Cut { .. } => panic!("band node list must start with a floor node"),
+        }
+
+        let mut buckets: Vec<Vec<RegionNode>> = vec![Vec::new(); parent_floors_len];
+        for child in next_band_nodes {
+            let rep_region: Option<usize> = match &child {
+                RegionNode::Cut { region_i, .. } => Some(region_i.0 as usize),
+                RegionNode::Floor { region_iz, .. } => region_iz.first().map(|r| r.0 as usize),
+                RegionNode::Root { .. } => unreachable!("Root nodes are only created at the end"),
+            };
+
+            let floor_off = rep_region
+                .and_then(|rid| region_to_floor.get(&rid).copied())
+                .unwrap_or(0);
+            buckets[floor_off].push(child);
+        }
+
+        for floor_off in 0..parent_floors_len {
+            let node = &mut parent_nodes[first_floor_i + floor_off];
+            match node {
+                RegionNode::Floor { children: c, .. } => {
+                    *c = std::mem::take(&mut buckets[floor_off]);
+                }
+                RegionNode::Cut { .. } => unreachable!("floors suffix must contain only floors"),
+                RegionNode::Root { .. } => unreachable!("Root nodes are only created at the end"),
+            }
         }
     }
 
-    let roots = std::mem::take(&mut band_nodes[0]);
-    RegionTree { cut_bands, roots }
+    fn prune_empty_floors(nodes: &mut Vec<RegionNode>) {
+        for n in nodes.iter_mut() {
+            match n {
+                RegionNode::Root { children } => prune_empty_floors(children),
+                RegionNode::Floor { children, .. } => prune_empty_floors(children),
+                RegionNode::Cut { .. } => {}
+            }
+        }
+
+        // Remove Floor nodes that don't gate anything.
+        nodes.retain(|n| match n {
+            RegionNode::Floor { children, .. } => !children.is_empty(),
+            _ => true,
+        });
+    }
+
+    let mut roots = std::mem::take(&mut nodes_per_band[0]);
+    prune_empty_floors(&mut roots);
+    let root = RegionNode::Root { children: roots };
+
+    RegionTree {
+        cut_bands,
+        roots: vec![root],
+    }
 }
 
-pub fn debug_print_region_tree(node: &RegionNode, ply_descs: &Vec<PlyDesc>, region_infos: &Vec<LabelInfo>, indent: usize) {
+pub fn debug_print_region_tree(
+    node: &RegionNode,
+    cut_bands: &[CutBand],
+    region_infos: &[LabelInfo],
+    indent: usize,
+) {
     let indent_str = " ".repeat(indent);
     match node {
-        RegionNode::Floor { band_i, cut_plane_i, children } => {
-            println!("{}Floor: band_i={}, cut_plane_i={}", indent_str, band_i, cut_plane_i);
+        RegionNode::Root { children } => {
+            println!("{}Root: num_children={}", indent_str, children.len());
             for child in children {
-                debug_print_region_tree(child, ply_descs, region_infos, indent + 2);
+                debug_print_region_tree(child, cut_bands, region_infos, indent + 2);
             }
         }
-        RegionNode::Cut { band_i, cut_plane_i, region_i } => {
-            let ply_desc = &ply_descs[*band_i];
+        RegionNode::Floor {
+            band_i,
+            cut_plane_i,
+            region_iz,
+            children,
+        } => {
+            let cp = &cut_bands[*band_i].cut_planes[*cut_plane_i];
+            debug_assert!(cp.is_floor);
+            println!(
+                "{}Floor: band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, num_floor_regions={}, num_children={}",
+                indent_str,
+                band_i,
+                cut_plane_i,
+                cp.ply_guid.0,
+                cp.top_thou,
+                region_iz.len(),
+                children.len()
+            );
+            for child in children {
+                debug_print_region_tree(child, cut_bands, region_infos, indent + 2);
+            }
+        }
+        RegionNode::Cut {
+            band_i,
+            cut_plane_i,
+            region_i,
+        } => {
+            let cp = &cut_bands[*band_i].cut_planes[*cut_plane_i];
+            debug_assert!(!cp.is_floor);
             let region_info = &region_infos[region_i.0 as usize];
-            println!("{}Cut: band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, region_i={}, region_size={}", 
-                indent_str, band_i, cut_plane_i, ply_desc.guid.0, ply_desc.top_thou, region_i.0, region_info.size);
+            println!(
+                "{}Cut: band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, region_i={}, region_size={}",
+                indent_str,
+                band_i,
+                cut_plane_i,
+                cp.ply_guid.0,
+                cp.top_thou,
+                region_i.0,
+                region_info.size
+            );
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::im::label::label_im;
+    use crate::im::label::{label_im, neighbor_map_from_labels};
 
     #[allow(dead_code)]
     fn im_u16_to_ascii<S>(im: &Im<u16, 1, S>) -> String {
@@ -608,9 +837,15 @@ mod tests {
             "#,
         );
 
-        let ply_descs = vec![stub_ply_desc("dummy", 0, true), stub_ply_desc("ply100", 100, false)];
+        let ply_descs = vec![
+            stub_ply_desc("dummy", 0, true),
+            stub_ply_desc("ply100", 100, false),
+        ];
 
-        let band_descs = vec![stub_band_desc(200, 100, "rough"), stub_band_desc(100, 0, "rough")];
+        let band_descs = vec![
+            stub_band_desc(200, 100, "rough"),
+            stub_band_desc(100, 0, "rough"),
+        ];
 
         let region_im = RegionIm::new(ply_im.w, ply_im.h);
         let region_infos: Vec<LabelInfo> = Vec::new();
@@ -624,18 +859,19 @@ mod tests {
             &ply_descs,
         );
 
-        let tree = create_region_tree(cut_bands);
-        assert_eq!(tree.roots.len(), 1, "top band should produce a single floor node");
+        // No labeled regions in this test, so the neighbor graph is empty.
+        // Still, create_region_tree expects a NeighborMap with a reserved/background entry at index 0.
+        let neighbor_map: NeighborMap = vec![std::collections::HashMap::new(); 1];
+        let tree = create_region_tree(cut_bands, &neighbor_map);
+        assert_eq!(tree.roots.len(), 1, "tree should have a single Root node");
 
         match &tree.roots[0] {
-            RegionNode::Floor { children, .. } => {
-                assert_eq!(children.len(), 1, "top floor should reveal the next band's nodes");
-                assert!(
-                    matches!(&children[0], RegionNode::Floor { .. }),
-                    "child should be the next band's floor node"
-                );
+            RegionNode::Root { children } => {
+                // With no labeled regions, there are no Cut nodes, and (after pruning)
+                // there is no need to keep Floor nodes that don't gate anything.
+                assert_eq!(children.len(), 0);
             }
-            RegionNode::Cut { .. } => panic!("root must be a floor node"),
+            _ => panic!("expected a Root node"),
         }
     }
 
@@ -658,10 +894,12 @@ mod tests {
 
         let ply_descs = vec![
             stub_ply_desc("dummy", 0, true),
-            stub_ply_desc("ply100", 100, false),
-            stub_ply_desc("ply400", 400, false),
-            stub_ply_desc("ply700", 700, false),
-            stub_ply_desc("ply900", 900, false),
+            // bottom band
+            stub_ply_desc("ply100", 100, false), // [1]
+            stub_ply_desc("ply400", 400, false), // [2]
+            // top band
+            stub_ply_desc("ply700", 700, false), // [3]
+            stub_ply_desc("ply900", 900, false), // [4]
         ];
 
         let band_descs = vec![
@@ -721,6 +959,8 @@ mod tests {
             &ply_descs,
         );
 
+        let neighbor_map = neighbor_map_from_labels(&region_im, &region_infos);
+
         // Ensure create_cut_bands attached the right number of regions to each ply.
         let mut region_counts_by_ply_i: std::collections::HashMap<u16, usize> =
             std::collections::HashMap::new();
@@ -737,40 +977,44 @@ mod tests {
         assert_eq!(region_counts_by_ply_i.get(&3).copied(), Some(1));
         assert_eq!(region_counts_by_ply_i.get(&4).copied(), Some(1));
 
-        let region_tree = create_region_tree(cut_bands);
+        let region_tree = create_region_tree(cut_bands, &neighbor_map);
 
-        // Structure expectations:
-        // - Roots are the top band's siblings: [floor0, cut(ply900), cut(ply700)]
-        // - floor0 reveals the next band's siblings: [floor1, cut(ply400), cut(ply100 outer), cut(ply100 inner)]
-        assert_eq!(region_tree.roots.len(), 3);
-        match &region_tree.roots[0] {
-            RegionNode::Floor {
-                band_i,
-                children,
-                ..
-            } => {
-                assert_eq!(*band_i, 0);
-                assert_eq!(children.len(), 4);
-                match &children[0] {
-                    RegionNode::Floor {
-                        band_i: child_band_i,
-                        children: grand_children,
-                        ..
-                    } => {
-                        assert_eq!(*child_band_i, 1);
-                        assert!(grand_children.is_empty());
-                    }
-                    RegionNode::Cut { .. } => panic!("expected child[0] to be the next band's floor"),
-                }
-            }
-            RegionNode::Cut { .. } => panic!("expected roots[0] to be a floor"),
+        assert_eq!(region_tree.roots.len(), 1);
+        let root_children = match &region_tree.roots[0] {
+            RegionNode::Root { children } => children,
+            _ => panic!("expected a Root node"),
+        };
+
+        let root_floors: Vec<&RegionNode> = root_children
+            .iter()
+            .filter(|n| matches!(n, RegionNode::Floor { .. }))
+            .collect();
+        assert!(!root_floors.is_empty(), "top band must have 1+ floor nodes");
+
+        let mut total_children = 0usize;
+        for f in &root_floors {
+            let RegionNode::Floor {
+                band_i, children, ..
+            } = *f
+            else {
+                unreachable!();
+            };
+            assert_eq!(*band_i, 0);
+            total_children += children.len();
         }
+        // Band 1's floor is pruned because it has no children, so only the 3 cut nodes remain.
+        assert_eq!(total_children, 3, "next band should contribute 3 cut nodes");
 
         // Count Cut nodes per band index.
         fn accumulate_cut_counts(nodes: &[RegionNode], counts: &mut Vec<usize>) {
             for n in nodes {
                 match n {
-                    RegionNode::Floor { band_i, children, .. } => {
+                    RegionNode::Root { children } => {
+                        accumulate_cut_counts(children, counts);
+                    }
+                    RegionNode::Floor {
+                        band_i, children, ..
+                    } => {
                         if *band_i >= counts.len() {
                             counts.resize(*band_i + 1, 0);
                         }
@@ -795,6 +1039,13 @@ mod tests {
         assert_eq!(cut_counts_by_band.get(1).copied(), Some(3));
 
         debug_print_cut_bands(&region_tree.cut_bands);
-        debug_print_region_tree(&region_tree.roots[0], &ply_descs, &region_infos, 0);
+        println!();
+
+        debug_print_region_tree(
+            &region_tree.roots[0],
+            &region_tree.cut_bands,
+            &region_infos,
+            0,
+        );
     }
 }
