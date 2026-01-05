@@ -1,7 +1,7 @@
 use rcarve::cut_stack::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
-use rcarve::toolpath::surface_tool_path_generation;
+use rcarve::toolpath::create_surface_toolpaths_from_region_tree;
 
 const TEST_JSON: &str = r#"
     {
@@ -185,7 +185,7 @@ fn main() {
     // Temporaily hard-code the tool radius
     let tool_radius_pix = 10_u32; // Pixels
 
-    let _surface_toolpath = surface_tool_path_generation(
+    let _surface_toolpath = create_surface_toolpaths_from_region_tree(
         &region_root,
         &tool_radius_pix,
         &ply_im,
