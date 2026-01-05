@@ -12,3 +12,6 @@ pub mod trace;
 pub mod mpoly;
 pub mod dilate_im;
 pub mod mat3;
+
+#[cfg(test)]
+pub mod test_helpers;
