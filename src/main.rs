@@ -190,6 +190,7 @@ fn main() {
 
     let _surface_toolpath = create_surface_toolpaths_from_region_tree(
         &region_root,
+        &cut_bands,
         &tool_radius_pix,
         &step_size_pix,
         &ply_im,

@@ -1,8 +1,8 @@
-use crate::region_tree::{PlyIm, RegionIm, RegionNode, RegionRoot};
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
 use crate::im::MaskIm;
 use crate::im::label::{LabelInfo, ROI};
+use crate::region_tree::{CutBand, PlyIm, RegionIm, RegionNode, RegionRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IV3 {
@@ -132,6 +132,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
 
 pub fn create_surface_toolpaths_from_region_tree(
     region_root: &RegionRoot,
+    cut_bands: &[CutBand],
     tool_radius_pix: &u32,
     step_size_pix: &u32,
     ply_im: &PlyIm,
@@ -149,21 +150,18 @@ pub fn create_surface_toolpaths_from_region_tree(
 
     let tool_dia_pix: usize = (tool_radius_pix.saturating_mul(2) + 1) as usize;
 
-    // TODO: set proper Z height per node/band.
-    let z_thou = Thou(0);
-
     let mut paths: Vec<ToolPath> = Vec::new();
 
     // Recurse through the region tree
     fn recurse_region_tree(
         node: &RegionNode,
+        cut_bands: &[CutBand],
         cut_mask_im: &mut MaskIm,
         above_mask_im: &mut MaskIm,
         dil_abv_mask_im: &mut MaskIm,
         tool_dia_pix: usize,
         tool_radius_pix: &u32,
         step_size_pix: &u32,
-        z_thou: &Thou,
         ply_im: &PlyIm,
         region_infos: &[LabelInfo],
         _paths: &mut Vec<ToolPath>,
@@ -176,13 +174,13 @@ pub fn create_surface_toolpaths_from_region_tree(
                 for child in children {
                     recurse_region_tree(
                         child,
+                        cut_bands,
                         cut_mask_im,
                         above_mask_im,
                         dil_abv_mask_im,
                         tool_dia_pix,
                         tool_radius_pix,
                         step_size_pix,
-                        z_thou,
                         ply_im,
                         region_infos,
                         _paths,
@@ -190,7 +188,17 @@ pub fn create_surface_toolpaths_from_region_tree(
                     );
                 }
             }
-            RegionNode::Cut { region_i, .. } => {
+            RegionNode::Cut {
+                band_i,
+                cut_plane_i,
+                region_i,
+            } => {
+                let z_thou: Thou = cut_bands
+                    .get(*band_i)
+                    .and_then(|b| b.cut_planes.get(*cut_plane_i))
+                    .map(|cp| cp.top_thou)
+                    .unwrap_or(Thou(0));
+
                 // Fill the two working images with 0.
 
                 // TODO: Optimze by clearing on the ROI after the fact
@@ -254,7 +262,7 @@ pub fn create_surface_toolpaths_from_region_tree(
                     &ROI { l, t, r, b },
                     tool_radius_pix,
                     step_size_pix,
-                    z_thou,
+                    &z_thou,
                 );
                 _paths.extend(toolpaths);
 
@@ -275,13 +283,13 @@ pub fn create_surface_toolpaths_from_region_tree(
     for child in &region_root.children {
         recurse_region_tree(
             child,
+            cut_bands,
             &mut cut_mask_im,
             &mut above_mask_im,
             &mut dil_above_mask_im,
             tool_dia_pix,
             tool_radius_pix,
             &step_size_pix,
-            &z_thou,
             ply_im,
             region_infos,
             &mut paths,
@@ -295,8 +303,8 @@ pub fn create_surface_toolpaths_from_region_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::region_tree::{create_cut_bands, create_region_tree};
     use crate::im::label::label_im;
+    use crate::region_tree::{create_cut_bands, create_region_tree};
     use crate::test_helpers::{
         im_u16_to_ascii, mask_to_ascii, ply_im_from_ascii, stub_band_desc, stub_ply_desc,
         toolpaths_to_ascii,
@@ -356,6 +364,7 @@ mod tests {
         let tool_step_pix = 1_u32;
         let paths = create_surface_toolpaths_from_region_tree(
             &region_root,
+            &cut_bands,
             &tool_radius_pix,
             &tool_step_pix,
             &ply_im,
@@ -370,12 +379,14 @@ mod tests {
             "each toolpath should have at least a start and end point"
         );
         assert!(
-            paths.iter().all(|p| p.points.iter().all(|pt| pt.z == 0)),
-            "default surface raster z should be 0 thou"
+            paths
+                .iter()
+                .all(|p| p.points.iter().all(|pt| matches!(pt.z, 100 | 200 | 300))),
+            "surface raster z should come from cut plane top_thou"
         );
     }
 
-        #[test]
+    #[test]
     fn raster_surface_toolpaths_basic_runs() {
         let mut m = MaskIm::new(6, 3);
 
@@ -448,7 +459,7 @@ mod tests {
         assert_eq!(paths2[0].points[1], IV3 { x: 3, y: 2, z: 50 });
     }
 
-#[test]
+    #[test]
     fn surface_tool_path_generation_dump_better_image() {
         let ply_im = ply_im_from_ascii(
             r#"
@@ -479,7 +490,10 @@ mod tests {
             stub_ply_desc("ply300", 300, false),
             stub_ply_desc("ply400", 400, false),
         ];
-        let band_descs = vec![stub_band_desc(500, 0, "rough")];
+        let band_descs = vec![
+            stub_band_desc(500, 350, "rough"),
+            stub_band_desc(350, 0, "rough"),
+        ];
 
         let (region_im_raw, region_infos) = label_im(&ply_im);
         let region_im: RegionIm = region_im_raw.retag::<crate::region_tree::RegionI>();
@@ -493,6 +507,13 @@ mod tests {
             &ply_descs,
         );
         let region_root = create_region_tree(&cut_bands, &region_infos);
+
+        // print the z ranges of the cut bands
+        for (i, band) in cut_bands.iter().enumerate() {
+            let top = band.top_thou.0;
+            let bot = band.bot_thou.0;
+            println!("Cut band {i}: top_thou={}, bot_thou={}", top, bot);
+        }
 
         let tool_radius_pix = 1_u32;
         let tool_step_pix = 2_u32;
@@ -529,6 +550,7 @@ mod tests {
         // Primary call under test (should not panic).
         let _paths = create_surface_toolpaths_from_region_tree(
             &region_root,
+            &cut_bands,
             &tool_radius_pix,
             &tool_step_pix,
             &ply_im,
@@ -603,19 +625,23 @@ mod tests {
             println!("cut[{i}] cut_mask:\n{}", mask_to_ascii(cut_m, None));
         }
 
-        // Print the paths as well.
-        for (i, path) in _paths.iter().enumerate() {
-            println!("Path {i}:");
-            for pt in &path.points {
-                println!("  x={} y={} z={}", pt.x, pt.y, pt.z);
-            }
+        // Print the paths grouped by their exact Z value.
+        let mut paths_by_z: std::collections::BTreeMap<i32, Vec<ToolPath>> =
+            std::collections::BTreeMap::new();
+
+        for path in &_paths {
+            let z = path.points.first().map(|p| p.z).unwrap_or(0);
+            paths_by_z.entry(z).or_default().push(path.clone());
         }
 
-        println!("paths (rasterized):\n{}", toolpaths_to_ascii(&_paths, ply_im.w, ply_im.h));
+        println!("--- Raster toolpaths by Z ---------------------------------------------------");
+
+        for (&z, z_paths) in paths_by_z.iter().rev() {
+            println!(
+                "paths (rasterized) z={}:\n{}",
+                z,
+                toolpaths_to_ascii(z_paths, ply_im.w, ply_im.h)
+            );
+        }
     }
-
-    
-
-
 }
-
