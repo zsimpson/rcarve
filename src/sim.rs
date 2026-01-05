@@ -7,8 +7,8 @@ use crate::desc::Thou;
 /// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
 /// A fast function applies a rounde end to each side of the line and fills the interior.
 
-pub fn male_circular_lut(tool_radius_pix: usize) -> Vec<usize> {
-    let mut lut: Vec<usize> = Vec::new();
+pub fn make_circular_pixel_iz(tool_radius_pix: usize) -> Vec<usize> {
+    let mut pixel_iz: Vec<usize> = Vec::new();
     let r_sq = (tool_radius_pix as isize) * (tool_radius_pix as isize);
     for dy in -(tool_radius_pix as isize)..=(tool_radius_pix as isize) {
         for dx in -(tool_radius_pix as isize)..=(tool_radius_pix as isize) {
@@ -16,11 +16,11 @@ pub fn male_circular_lut(tool_radius_pix: usize) -> Vec<usize> {
                 let offset = (dy as isize) * (2 * tool_radius_pix as isize + 1) + (dx as isize)
                     + (tool_radius_pix as isize)
                     + (tool_radius_pix as isize) * (2 * tool_radius_pix as isize + 1);
-                lut.push(offset as usize);
+                pixel_iz.push(offset as usize);
             }
         }
     }
-    lut
+    pixel_iz
 }
 
 
@@ -38,7 +38,6 @@ pub fn draw_line_path_rounded_ends(
     start: (usize, usize, Thou),
     end: (usize, usize, Thou),
     tool_radius_pix: usize,
-    _tool_pixel_iz: &Vec<usize>,
 ) {
     let w = im.w;
     let h = im.h;
@@ -176,6 +175,44 @@ pub fn draw_line_path_rounded_ends(
     }
 }
 
+/// Simulate toolpaths into a `Lum16Im` representing the result.
+///
+/// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
+pub fn sim_toolpaths(
+    im: &mut Lum16Im,
+    toolpaths: &Vec<ToolPath>,
+    _cut_bands: &Vec<CutBand>,
+    _w: usize,
+    _h: usize,
+) {
+    for path in toolpaths {
+        let tool_radius_pix = path.tool_dia_pix / 2;
+        let tool_circle_lut = make_circular_pixel_iz(tool_radius_pix);
+
+        for win in path.points.windows(2) {
+            let a = win[0];
+            let b = win[1];
+
+            if a.x < 0 || a.y < 0 || b.x < 0 || b.y < 0 {
+                continue;
+            }
+            let ax = (a.x as usize).min(im.w.saturating_sub(1));
+            let ay = (a.y as usize).min(im.h.saturating_sub(1));
+            let bx = (b.x as usize).min(im.w.saturating_sub(1));
+            let by = (b.y as usize).min(im.h.saturating_sub(1));
+
+            draw_line_path_rounded_ends(
+                &tool_circle_lut,
+                im,
+                (ax, ay, Thou(a.z)),
+                (bx, by, Thou(b.z)),
+                tool_radius_pix,
+            );
+        }
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,8 +223,7 @@ mod tests {
         im.arr.fill(1000);
 
         let r = 1;
-        let lut = male_circular_lut(r);
-        let tool_pixel_iz: Vec<usize> = Vec::new();
+        let lut = make_circular_pixel_iz(r);
 
         draw_line_path_rounded_ends(
             &lut,
@@ -195,7 +231,6 @@ mod tests {
             (5, 5, Thou(200)),
             (10, 5, Thou(200)),
             r,
-            &tool_pixel_iz,
         );
 
         let at = |x: usize, y: usize| -> u16 { im.arr[y * im.s + x] };
@@ -219,8 +254,7 @@ mod tests {
         im.arr.fill(1000);
 
         let r = 0;
-        let lut = male_circular_lut(r);
-        let tool_pixel_iz: Vec<usize> = Vec::new();
+        let lut = make_circular_pixel_iz(r);
 
         // Horizontal line 5px long (x=5..10). With steps=5, x=7 is t=2/5 => 220.
         draw_line_path_rounded_ends(
@@ -229,7 +263,6 @@ mod tests {
             (5, 5, Thou(300)),
             (10, 5, Thou(100)),
             r,
-            &tool_pixel_iz,
         );
 
         let at = |x: usize, y: usize| -> u16 { im.arr[y * im.s + x] };
@@ -239,54 +272,3 @@ mod tests {
     }
 }
 
-/// Simulate toolpaths into a `Lum16Im` representing the result.
-///
-/// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
-pub fn sim_toolpaths(
-    im: &mut Lum16Im,
-    toolpaths: &Vec<ToolPath>,
-    _cut_bands: &Vec<CutBand>,
-    _w: usize,
-    _h: usize,
-) {
-    for path in toolpaths {
-        let tool_radius_pix = path.tool_dia_pix / 2;
-        let tool_circle_lut = male_circular_lut(tool_radius_pix);
-
-        // Optional precomputed linear offsets for the kernel (currently unused by
-        // `draw_line_path_rounded_ends`, but kept for the intended fast path).
-        let kernel_w = 2 * tool_radius_pix + 1;
-        let mut tool_pixel_iz: Vec<usize> = Vec::with_capacity(kernel_w * kernel_w);
-        let r_i = tool_radius_pix as isize;
-        for ky in 0..kernel_w {
-            for kx in 0..kernel_w {
-                let dx = (kx as isize) - r_i;
-                let dy = (ky as isize) - r_i;
-                let delta = dy * (im.s as isize) + dx;
-                tool_pixel_iz.push(delta as usize);
-            }
-        }
-
-        for win in path.points.windows(2) {
-            let a = win[0];
-            let b = win[1];
-
-            if a.x < 0 || a.y < 0 || b.x < 0 || b.y < 0 {
-                continue;
-            }
-            let ax = (a.x as usize).min(im.w.saturating_sub(1));
-            let ay = (a.y as usize).min(im.h.saturating_sub(1));
-            let bx = (b.x as usize).min(im.w.saturating_sub(1));
-            let by = (b.y as usize).min(im.h.saturating_sub(1));
-
-            draw_line_path_rounded_ends(
-                &tool_circle_lut,
-                im,
-                (ax, ay, Thou(a.z)),
-                (bx, by, Thou(b.z)),
-                tool_radius_pix,
-                &tool_pixel_iz,
-            );
-        }
-    }
-}
