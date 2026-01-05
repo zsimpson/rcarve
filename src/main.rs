@@ -1,7 +1,9 @@
+use rcarve::im::Lum16Im;
 use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::toolpath::create_surface_toolpaths_from_region_tree;
+use rcarve::sim::sim_toolpaths;
 
 const TEST_JSON: &str = r#"
     {
@@ -188,7 +190,7 @@ fn main() {
     // Raster step size: int(80% of tool radius), clamped to at least 1.
     let step_size_pix = (tool_radius_pix.saturating_mul(4) / 5).max(1);
 
-    let _surface_toolpath = create_surface_toolpaths_from_region_tree(
+    let surface_toolpaths = create_surface_toolpaths_from_region_tree(
         &region_root,
         &cut_bands,
         &tool_radius_pix,
@@ -198,4 +200,16 @@ fn main() {
         &region_infos,
         None,
     );
+
+    let mut sim_im = Lum16Im::new(w, h);
+    sim_im.arr.fill(1000_u16); // TODO real initial heightmap
+
+    sim_toolpaths(
+        sim_im,
+        &surface_toolpaths,
+        &cut_bands,
+        w, h,
+    );
+
+
 }
