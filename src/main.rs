@@ -191,5 +191,6 @@ fn main() {
         &ply_im,
         &region_im,
         &region_infos,
+        None,
     );
 }

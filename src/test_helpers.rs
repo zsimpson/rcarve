@@ -1,6 +1,7 @@
 use crate::cut_stack::PlyIm;
 use crate::desc::{BandDesc, Guid, PlyDesc, Thou};
 use crate::im::core::Im;
+use crate::im::label::ROI;
 use crate::im::MaskIm;
 
 pub fn ply_im_from_ascii(grid: &str) -> PlyIm {
@@ -68,12 +69,34 @@ pub fn im_u16_to_ascii<S>(im: &Im<u16, 1, S>) -> String {
     out
 }
 
-pub fn mask_to_ascii(mask: &MaskIm) -> String {
+pub fn mask_to_ascii(mask: &MaskIm, roi: Option<&ROI>) -> String {
     let mut out = String::new();
+
+    let roi = roi.map(|r| {
+        let l = r.l.min(mask.w);
+        let t = r.t.min(mask.h);
+        let r_ex = r.r.min(mask.w);
+        let b_ex = r.b.min(mask.h);
+        (l, t, r_ex, b_ex)
+    });
+
     for y in 0..mask.h {
         for x in 0..mask.w {
             let v = mask.arr[y * mask.s + x];
-            out.push(if v > 0 { '#' } else { '.' });
+
+            let is_roi_edge = if let Some((l, t, r_ex, b_ex)) = roi {
+                if r_ex > l && b_ex > t {
+                    let on_x_edge = x == l || x + 1 == r_ex;
+                    let on_y_edge = y == t || y + 1 == b_ex;
+                    x >= l && x < r_ex && y >= t && y < b_ex && (on_x_edge || on_y_edge)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            out.push(if is_roi_edge { '*' } else if v > 0 { '#' } else { '.' });
         }
         out.push('\n');
     }

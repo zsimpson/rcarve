@@ -2,7 +2,7 @@ use super::core::Im;
 use std::collections::HashMap;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AabbRoi {
+pub struct ROI {
     pub l: usize,
     pub t: usize,
     /// Exclusive right bound.
@@ -18,7 +18,7 @@ fn flood_im<SrcT, TarT, S>(
     start_x: usize,
     start_y: usize,
     fill_val: TarT,
-) -> (usize, Vec<usize>, AabbRoi)
+) -> (usize, Vec<usize>, ROI)
 where
     SrcT: Copy + PartialEq,
     TarT: Copy,
@@ -40,7 +40,7 @@ where
 
     let mut filled = 0usize;
     let mut pixel_iz: Vec<usize> = Vec::new();
-    let mut roi = AabbRoi {
+    let mut roi = ROI {
         l: start_x,
         t: start_y,
         r: start_x + 1,
@@ -110,7 +110,7 @@ pub struct LabelInfo {
     pub size: usize,
     pub start_x: usize,
     pub start_y: usize,
-    pub roi: AabbRoi,
+    pub roi: ROI,
     pub pixel_iz: Vec<usize>,
     pub neighbors: HashMap<usize, usize>,
 }
@@ -356,13 +356,13 @@ mod tests {
         assert_eq!(groups[1].size, 2);
         assert_eq!(groups[1].start_x, 4);
         assert_eq!(groups[1].start_y, 0);
-        assert_eq!(groups[1].roi, AabbRoi { l: 4, t: 0, r: 6, b: 1 });
+        assert_eq!(groups[1].roi, ROI { l: 4, t: 0, r: 6, b: 1 });
         assert_eq!(groups[1].pixel_iz.len(), 2);
 
         assert_eq!(groups[2].size, 4);
         assert_eq!(groups[2].start_x, 1);
         assert_eq!(groups[2].start_y, 1);
-        assert_eq!(groups[2].roi, AabbRoi { l: 1, t: 1, r: 3, b: 3 });
+        assert_eq!(groups[2].roi, ROI { l: 1, t: 1, r: 3, b: 3 });
         assert_eq!(groups[2].pixel_iz.len(), 4);
 
         // Verify labels were written into dst with group ids.
@@ -500,9 +500,9 @@ mod tests {
 
         // Pixel indices are `s*y + x` where `s == w == 4`.
         assert_eq!(infos[id1].pixel_iz, vec![0, 1, 4]);
-        assert_eq!(infos[id1].roi, AabbRoi { l: 0, t: 0, r: 2, b: 2 });
+        assert_eq!(infos[id1].roi, ROI { l: 0, t: 0, r: 2, b: 2 });
 
         assert_eq!(infos[id2].pixel_iz, vec![2 * 4 + 3]);
-        assert_eq!(infos[id2].roi, AabbRoi { l: 3, t: 2, r: 4, b: 3 });
+        assert_eq!(infos[id2].roi, ROI { l: 3, t: 2, r: 4, b: 3 });
     }
 }
