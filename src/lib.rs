@@ -6,7 +6,7 @@
 
 pub mod im;
 pub mod desc;
-pub mod cut_stack;
+pub mod region_tree;
 pub mod toolpath;
 pub mod trace;
 pub mod mpoly;

@@ -327,7 +327,7 @@ pub fn debug_print_cut_bands(cut_bands: &Vec<CutBand>) {
         );
         for (cut_plane_i, cut_plane) in band.cut_planes.iter().enumerate() {
             println!(
-                "  CutPlane[{}]: ply_guid={}, top_thou={:?}, ply_i={}, is_floor={}, num_regions={}",
+                "  CutPlane[{}]: ply_guid={}, top_thou={:?}, ply_i={}, is_floor={}, num_regions={} ",
                 cut_plane_i,
                 cut_plane.ply_guid.0,
                 cut_plane.top_thou,

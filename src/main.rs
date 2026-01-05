@@ -1,4 +1,4 @@
-use rcarve::cut_stack::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
+use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::toolpath::create_surface_toolpaths_from_region_tree;
@@ -185,9 +185,13 @@ fn main() {
     // Temporaily hard-code the tool radius
     let tool_radius_pix = 10_u32; // Pixels
 
+    // Raster step size: int(80% of tool radius), clamped to at least 1.
+    let step_size_pix = (tool_radius_pix.saturating_mul(4) / 5).max(1);
+
     let _surface_toolpath = create_surface_toolpaths_from_region_tree(
         &region_root,
         &tool_radius_pix,
+        &step_size_pix,
         &ply_im,
         &region_im,
         &region_infos,
