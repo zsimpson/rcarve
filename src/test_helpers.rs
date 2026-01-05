@@ -184,15 +184,15 @@ mod tests {
         let paths = vec![
             ToolPath {
                 points: vec![IV3 { x: 3, y: 1, z: 0 }, IV3 { x: 6, y: 1, z: 0 }],
-                tool_thou: Thou(0),
+                tool_dia_pix: 0,
             },
             ToolPath {
                 points: vec![IV3 { x: 12, y: 1, z: 0 }, IV3 { x: 17, y: 1, z: 0 }],
-                tool_thou: Thou(0),
+                tool_dia_pix: 0,
             },
             ToolPath {
                 points: vec![IV3 { x: 6, y: 2, z: 0 }, IV3 { x: 10, y: 2, z: 0 }],
-                tool_thou: Thou(0),
+                tool_dia_pix: 0,
             },
         ];
 

@@ -14,7 +14,7 @@ pub struct IV3 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPath {
     pub points: Vec<IV3>,
-    pub tool_thou: Thou,
+    pub tool_dia_pix: usize,
 }
 
 /// Given a cut mask image (1-channel, 8-bit), generate raster tool paths
@@ -27,9 +27,9 @@ pub struct ToolPath {
 fn create_raster_surface_tool_paths_from_cut_mask(
     cut_mask_im: &MaskIm,
     roi: &ROI,
-    tool_radius_pix: &u32,
-    tool_step_pix: &u32,
-    z_thou: &Thou,
+    tool_dia_pix: usize,
+    tool_step_pix: usize,
+    z_thou: Thou,
     // TODO: add orientation
 ) -> Vec<ToolPath> {
     let w = cut_mask_im.w;
@@ -48,7 +48,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
     }
 
     // Ensure we never generate tool-center positions that would place the tool outside the image.
-    let rad = (*tool_radius_pix as usize)
+    let rad = (tool_dia_pix / 2 as usize)
         .min(w.saturating_sub(1))
         .min(h.saturating_sub(1));
     let max_x_excl = w.saturating_sub(rad);
@@ -61,7 +61,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
         return Vec::new();
     }
 
-    let y_step = (*tool_step_pix).max(1) as usize;
+    let y_step = (tool_step_pix).max(1) as usize;
 
     let mut paths: Vec<ToolPath> = Vec::new();
     for y in (t..b).step_by(y_step) {
@@ -89,7 +89,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                             z: z_thou.0,
                         },
                     ],
-                    tool_thou: *z_thou,
+                    tool_dia_pix
                 });
             }
         }
@@ -110,7 +110,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                         z: z_thou.0,
                     },
                 ],
-                tool_thou: *z_thou,
+                tool_dia_pix,
             });
         }
     }
@@ -133,8 +133,8 @@ fn create_raster_surface_tool_paths_from_cut_mask(
 pub fn create_surface_toolpaths_from_region_tree(
     region_root: &RegionRoot,
     cut_bands: &[CutBand],
-    tool_radius_pix: &u32,
-    step_size_pix: &u32,
+    tool_dia_pix: usize,
+    step_size_pix: usize,
     ply_im: &PlyIm,
     region_im: &RegionIm,
     region_infos: &[LabelInfo],
@@ -148,8 +148,6 @@ pub fn create_surface_toolpaths_from_region_tree(
     let mut above_mask_im = MaskIm::new(w, h);
     let mut dil_above_mask_im = MaskIm::new(w, h);
 
-    let tool_dia_pix: usize = (tool_radius_pix.saturating_mul(2) + 1) as usize;
-
     let mut paths: Vec<ToolPath> = Vec::new();
 
     // Recurse through the region tree
@@ -160,8 +158,7 @@ pub fn create_surface_toolpaths_from_region_tree(
         above_mask_im: &mut MaskIm,
         dil_abv_mask_im: &mut MaskIm,
         tool_dia_pix: usize,
-        tool_radius_pix: &u32,
-        step_size_pix: &u32,
+        step_size_pix: usize,
         ply_im: &PlyIm,
         region_infos: &[LabelInfo],
         _paths: &mut Vec<ToolPath>,
@@ -179,7 +176,6 @@ pub fn create_surface_toolpaths_from_region_tree(
                         above_mask_im,
                         dil_abv_mask_im,
                         tool_dia_pix,
-                        tool_radius_pix,
                         step_size_pix,
                         ply_im,
                         region_infos,
@@ -260,9 +256,9 @@ pub fn create_surface_toolpaths_from_region_tree(
                 let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
                     cut_mask_im,
                     &ROI { l, t, r, b },
-                    tool_radius_pix,
+                    tool_dia_pix,
                     step_size_pix,
-                    &z_thou,
+                    z_thou,
                 );
                 _paths.extend(toolpaths);
 
@@ -288,8 +284,7 @@ pub fn create_surface_toolpaths_from_region_tree(
             &mut above_mask_im,
             &mut dil_above_mask_im,
             tool_dia_pix,
-            tool_radius_pix,
-            &step_size_pix,
+            step_size_pix,
             ply_im,
             region_infos,
             &mut paths,
@@ -360,13 +355,13 @@ mod tests {
         let total_cut_leaves: usize = region_root.children.iter().map(count_cut_leaves).sum();
         assert!(total_cut_leaves > 0, "test setup must produce cut leaves");
 
-        let tool_radius_pix = 1_u32;
-        let tool_step_pix = 1_u32;
+        let tool_dia_pix = 2_usize;
+        let tool_step_pix = 1_usize;
         let paths = create_surface_toolpaths_from_region_tree(
             &region_root,
             &cut_bands,
-            &tool_radius_pix,
-            &tool_step_pix,
+            tool_dia_pix,
+            tool_step_pix,
             &ply_im,
             &region_im,
             &region_infos,
@@ -408,7 +403,7 @@ mod tests {
             r: 6,
             b: 3,
         };
-        let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, &0, &1, &Thou(123));
+        let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 0, 1, Thou(123));
 
         // Expect 1 run on y=0 and 3 runs on y=1.
         assert_eq!(paths.len(), 4);
@@ -446,14 +441,14 @@ mod tests {
             r: 5,
             b: 5,
         };
-        let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, &1, &2, &Thou(50));
+        let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 1, 2, Thou(50));
 
         // step=2 visits y=1,3 if clamped, but with radius=1 we scan y in [1,4) => y=1,3.
         // Our horizontal run is at y=2 and should be skipped; and x=0 is clamped out by radius.
         assert!(paths.is_empty());
 
         // Now step=1: y=2 is visited, but x=0 is still clamped out.
-        let paths2 = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, &1, &1, &Thou(50));
+        let paths2 = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 1, 1, Thou(50));
         assert_eq!(paths2.len(), 1);
         assert_eq!(paths2[0].points[0], IV3 { x: 1, y: 2, z: 50 });
         assert_eq!(paths2[0].points[1], IV3 { x: 3, y: 2, z: 50 });
@@ -515,9 +510,8 @@ mod tests {
             println!("Cut band {i}: top_thou={}, bot_thou={}", top, bot);
         }
 
-        let tool_radius_pix = 1_u32;
-        let tool_step_pix = 2_u32;
-        // let tool_dia_pix: usize = (tool_radius_pix.saturating_mul(2) + 1) as usize;
+        let tool_dia_pix = 2_usize;
+        let tool_step_pix = 2_usize;
 
         let mut node_results: Vec<(
             RegionNode,
@@ -551,8 +545,8 @@ mod tests {
         let _paths = create_surface_toolpaths_from_region_tree(
             &region_root,
             &cut_bands,
-            &tool_radius_pix,
-            &tool_step_pix,
+            tool_dia_pix,
+            tool_step_pix,
             &ply_im,
             &region_im,
             &region_infos,
