@@ -3,12 +3,11 @@ use crate::im::{Im1Mut, Lum16Im};
 // use crate::toolpath::ToolPath;
 use crate::desc::Thou;
 
-
 /// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
 /// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
 
 /// Return a list of signed pixel indices that form a circular shape centered at (0,0) given the stride .
-pub fn circle_pixel_iz(radius_pix:usize, stride: usize) -> Vec<isize> {
+pub fn circle_pixel_iz(radius_pix: usize, stride: usize) -> Vec<isize> {
     let mut pixel_iz = Vec::new();
     let r = radius_pix as isize;
     let r_sq = r * r;
@@ -41,8 +40,14 @@ pub fn splat_pixel_iz_no_bounds<TIm, T>(
 
     for &di in pixel_iz {
         let i = center_i + di;
-        debug_assert!(i >= 0, "splat_pixel_iz_no_bounds: negative index (center_i={center_i}, di={di})");
-        debug_assert!(i < len_i, "splat_pixel_iz_no_bounds: OOB index (i={i}, len={len_i})");
+        debug_assert!(
+            i >= 0,
+            "splat_pixel_iz_no_bounds: negative index (center_i={center_i}, di={di})"
+        );
+        debug_assert!(
+            i < len_i,
+            "splat_pixel_iz_no_bounds: OOB index (i={i}, len={len_i})"
+        );
 
         unsafe {
             let p = arr.get_unchecked_mut(i as usize);
@@ -53,58 +58,37 @@ pub fn splat_pixel_iz_no_bounds<TIm, T>(
     }
 }
 
-
-fn draw_parallelogram_vertical_no_bounds_single_z(
+/// Draw a vertical parallelogram shape into a Lum16Im along a center-line
+/// given by (x0f, y0f) to (x1f, y1f), with left and right extents
+fn parallelogram_vert_no_bounds_single_z(
     im: &mut Lum16Im,
-    srt: (usize, usize, Thou),
-    end: (usize, usize, Thou),
-    tool_radius_pix: usize,
+    x0f: f64,
+    y0f: f64,
+    x1f: f64,
+    y1f: f64,
+    x_lftf: f64,
+    x_rgtf: f64,
+    z: u16,
 ) {
-    let rf = tool_radius_pix as f64;
-    let z_u16 = srt.2.0 as u16;
     let stride = im.s;
     let arr = &mut im.arr;
-    debug_assert!(srt.2 == end.2);
+    let x_stepf = (x1f - x0f) / (y1f - y0f);
 
-    let sx = srt.0;
-    let sy = srt.1;
-    let sxf = sx as f64 + 0.5;
-    let syf = sy as f64 + 0.5;
-
-    let ex = end.0;
-    let ey = end.1;
-    let exf = ex as f64 + 0.5;
-    let eyf = ey as f64 + 0.5;
-
-    let dxf = exf - sxf;
-    let dyf = eyf - syf;
-    debug_assert!(dyf > 0.0);
-    let d_magf = (dxf * dxf + dyf * dyf).sqrt();
-
-    let x_spanf = rf * d_magf / dyf;
-    let y_offsf = (x_spanf * x_spanf - rf * rf).sqrt() * dyf / d_magf;
-    let y_srtf = syf + y_offsf;
-    let y_srt = y_srtf.round() as usize;
-    let y_end = (syf + dyf - y_offsf).round() as usize;
-    let x_stepf = dxf / dyf;
-
-    // TODO: Fill in the top parallelogram cap
-
-
-    let mut y = y_srt;
-    let mut xf = sxf + x_stepf * y_offsf;
-    while y < y_end {
+    let mut xf = x0f;
+    let mut y = y0f.round() as usize;
+    let y1 = y1f.round() as usize;
+    while y < y1 {
         let i_at_row = y * stride;
-        let x_min = (xf - x_spanf).ceil() as usize;
-        let x_max = (xf + x_spanf).floor() as usize;
+        let x_lft = (xf + x_lftf).ceil() as usize;
+        let x_rgt = (xf + x_rgtf).floor() as usize;
 
-        let mut i = i_at_row + x_min;
-        let rgt_i = i_at_row + x_max;
+        let mut i = i_at_row + x_lft;
+        let rgt_i = i_at_row + x_rgt;
         while i <= rgt_i {
             unsafe {
                 let p = arr.get_unchecked_mut(i);
-                if z_u16 < *p {
-                    *p = z_u16;
+                if z < *p {
+                    *p = z;
                 }
             }
             i += 1;
@@ -115,6 +99,253 @@ fn draw_parallelogram_vertical_no_bounds_single_z(
     }
 }
 
+/// Draw a horizontal parallelogram shape into a Lum16Im along a center-line
+/// given by (x0f, y0f) to (x1f, y1f), with left and right extents
+fn parallelogram_horz_no_bounds_single_z(
+    im: &mut Lum16Im,
+    x0f: f64,
+    y0f: f64,
+    x1f: f64,
+    y1f: f64,
+    y_topf: f64,
+    t_botf: f64,
+    z: u16,
+) {
+    let stride = im.s;
+    let arr = &mut im.arr;
+    let y_stepf = (y1f - y0f) / (x1f - x0f);
+
+    let mut yf = y0f;
+    let mut x = x0f.round() as usize;
+    let x1 = x1f.round() as usize;
+    while x < x1 {
+        let i_at_col = x;
+        let y_top = (yf + y_topf).ceil() as usize;
+        let y_bot = (yf + t_botf).floor() as usize;
+
+        let mut i = i_at_col + stride * y_top;
+        let bot_i = i_at_col + stride * y_bot;
+        while i <= bot_i {
+            unsafe {
+                let p = arr.get_unchecked_mut(i);
+                if z < *p {
+                    *p = z;
+                }
+            }
+            i += stride;
+        }
+
+        yf += y_stepf;
+        x += 1;
+    }
+}
+
+fn draw_parallelogram_vert_no_bounds_single_z(
+    im: &mut Lum16Im,
+    p0: (usize, usize, Thou),
+    p1: (usize, usize, Thou),
+    radius_pix: usize,
+) {
+    let rf = radius_pix as f64;
+    let z_u16 = p0.2.0 as u16;
+    debug_assert!(p0.2 == p1.2);
+
+    let x0 = p0.0;
+    let y0 = p0.1;
+    let x0f = x0 as f64 + 0.5;
+    let y0f = y0 as f64 + 0.5;
+
+    let x1 = p1.0;
+    let y1 = p1.1;
+    let x1f = x1 as f64 + 0.5;
+    let y1f = y1 as f64 + 0.5;
+
+    let dxf = x1f - x0f;
+    let dyf = y1f - y0f;
+    debug_assert!(dyf > 0.0);
+    let d_magf = (dxf * dxf + dyf * dyf).sqrt();
+
+    let x_normf = dxf / d_magf;
+    let y_normf = dyf / d_magf;
+
+    let offf = rf * dxf / dyf;
+    let spnf = rf * d_magf / dyf;
+    // let side = if dxf >= 0.0 { 1.0 } else { -1.0 };
+
+    let mut inside_offf = offf;
+    if d_magf < 2.0 * offf {
+        inside_offf = offf.min(d_magf - offf);
+    }
+
+    let top_lft;
+    let top_rgt;
+    let bot_lft;
+    let bot_rgt;
+    let inside_xof;
+    let inside_yof;
+    let otside_xof;
+    let otside_yof;
+    if dxf > 0.0 {
+        // Right side
+        top_lft = 0.0;
+        top_rgt = spnf;
+        bot_lft = -spnf;
+        bot_rgt = 0.0;
+        otside_xof = offf * x_normf;
+        otside_yof = offf * y_normf;
+        inside_xof = inside_offf * x_normf;
+        inside_yof = inside_offf * y_normf;
+    } else {
+        // Left side
+        // Swap which half gets filled versus the dxf>0 case.
+        top_lft = -spnf;
+        top_rgt = 0.0;
+        bot_lft = 0.0;
+        bot_rgt = spnf;
+        otside_xof = -offf * x_normf;
+        otside_yof = -offf * y_normf;
+        inside_xof = -inside_offf * x_normf;
+        inside_yof = -inside_offf * y_normf;
+    }
+
+    parallelogram_vert_no_bounds_single_z(
+        im,
+        x0f - otside_xof,
+        y0f - otside_yof,
+        x0f + inside_xof,
+        y0f + inside_yof,
+        top_lft,
+        top_rgt,
+        z_u16,
+    );
+
+    parallelogram_vert_no_bounds_single_z(
+        im,
+        x0f + inside_xof,
+        y0f + inside_yof,
+        x1f - otside_xof,
+        y1f - otside_yof,
+        -spnf,
+        spnf,
+        z_u16,
+    );
+
+    parallelogram_vert_no_bounds_single_z(
+        im,
+        x1f - inside_xof,
+        y1f - inside_yof,
+        x1f + otside_xof,
+        y1f + otside_yof,
+        bot_lft,
+        bot_rgt,
+        z_u16,
+    );
+}
+
+
+fn draw_parallelogram_horz_no_bounds_single_z(
+    im: &mut Lum16Im,
+    p0: (usize, usize, Thou),
+    p1: (usize, usize, Thou),
+    radius_pix: usize,
+) {
+    let rf = radius_pix as f64;
+    let z_u16 = p0.2.0 as u16;
+    debug_assert!(p0.2 == p1.2);
+
+    let x0 = p0.0;
+    let y0 = p0.1;
+    let x0f = x0 as f64 + 0.5;
+    let y0f = y0 as f64 + 0.5;
+
+    let x1 = p1.0;
+    let y1 = p1.1;
+    let x1f = x1 as f64 + 0.5;
+    let y1f = y1 as f64 + 0.5;
+
+    let dxf = x1f - x0f;
+    let dyf = y1f - y0f;
+    debug_assert!(dxf > 0.0);
+    let d_magf = (dxf * dxf + dyf * dyf).sqrt();
+
+    let x_normf = dxf / d_magf;
+    let y_normf = dyf / d_magf;
+
+    let offf = rf * dyf / dxf;
+    let spnf = rf * d_magf / dxf;
+
+    let mut inside_offf = offf;
+    if d_magf < 2.0 * offf {
+        inside_offf = offf.min(d_magf - offf);
+    }
+
+    // TODO rename
+    let top_lft;
+    let top_rgt;
+    let bot_lft;
+    let bot_rgt;
+    let inside_xof;
+    let inside_yof;
+    let otside_xof;
+    let otside_yof;
+    if dyf > 0.0 {
+        // Bottom side
+        top_lft = 0.0;
+        top_rgt = spnf;
+        bot_lft = -spnf;
+        bot_rgt = 0.0;
+        otside_xof = offf * x_normf;
+        otside_yof = offf * y_normf;
+        inside_xof = inside_offf * x_normf;
+        inside_yof = inside_offf * y_normf;
+    } else {
+        // Top side
+        top_lft = -spnf;
+        top_rgt = 0.0;
+        bot_lft = 0.0;
+        bot_rgt = spnf;
+        otside_xof = -offf * x_normf;
+        otside_yof = -offf * y_normf;
+        inside_xof = -inside_offf * x_normf;
+        inside_yof = -inside_offf * y_normf;
+    }
+
+    parallelogram_horz_no_bounds_single_z(
+        im,
+        x0f - otside_xof,
+        y0f - otside_yof,
+        x0f + inside_xof,
+        y0f + inside_yof,
+        top_lft,
+        top_rgt,
+        z_u16,
+    );
+
+    parallelogram_horz_no_bounds_single_z(
+        im,
+        x0f + inside_xof,
+        y0f + inside_yof,
+        x1f - otside_xof,
+        y1f - otside_yof,
+        -spnf,
+        spnf,
+        z_u16,
+    );
+
+    parallelogram_horz_no_bounds_single_z(
+        im,
+        x1f - inside_xof,
+        y1f - inside_yof,
+        x1f + otside_xof,
+        y1f + otside_yof,
+        bot_lft,
+        bot_rgt,
+        z_u16,
+    );
+}
+
+
+
 
 /// Draw a line with rounded ends into a Lum16Im, interpolating the height values along the line.
 /// Clip the line to the image bounds before starting.
@@ -124,10 +355,35 @@ pub fn draw_toolpath_single_depth(
     start: (usize, usize, Thou),
     end: (usize, usize, Thou),
     tool_radius_pix: usize,
+    circle_pixel_iz: Vec<isize>,
 ) {
-    draw_parallelogram_vertical_no_bounds_single_z(im, start, end, tool_radius_pix);
-}
+    let dx = end.0 as isize - start.0 as isize;
+    let dy = end.1 as isize - start.1 as isize;
+    let tmp;
 
+    let mut p0 = start;
+    let mut p1 = end;
+
+    if dx != 0 || dy != 0 {
+        if dx.abs() >= dy.abs() {
+            // Mostly horizontal line
+            if dx < 0 {
+                // Swap to make left-to-right
+                tmp = p0;
+                p0 = p1;
+                p1 = tmp;
+            }
+            draw_parallelogram_horz_no_bounds_single_z(im, p0, p1, tool_radius_pix);
+        }
+        else {
+            // Mostly vertical line
+            draw_parallelogram_vert_no_bounds_single_z(im, p0, p1, tool_radius_pix);
+        }
+
+        splat_pixel_iz_no_bounds(p0.0, p0.1, im, 800 as u16, &circle_pixel_iz);
+    }
+    splat_pixel_iz_no_bounds(p1.0, p1.1, im, 800 as u16, &circle_pixel_iz);
+}
 
 // Simulate toolpaths into a `Lum16Im` representing the result.
 //
@@ -140,4 +396,3 @@ pub fn draw_toolpath_single_depth(
 //     _h: usize,
 // ) {
 // }
-

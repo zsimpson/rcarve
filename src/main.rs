@@ -4,7 +4,7 @@ use rcarve::im::Lum16Im;
 use rcarve::desc::Thou;
 // use rcarve::im::label::{LabelInfo, label_im};
 // use rcarve::toolpath::create_surface_toolpaths_from_region_tree;
-use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth, splat_pixel_iz_no_bounds};
+use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
 #[allow(dead_code)]
 const TEST_JSON: &str = r#"
@@ -94,12 +94,10 @@ fn try_draw() {
     let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
     let z_thou = Thou(500);
 
-    let start = (200, 200, z_thou);
-    let end = (800, 800, z_thou);
+    let p0 = (200, 200, z_thou);
+    let p1 = (200, 200, z_thou);
 
-    draw_toolpath_single_depth(im, start, end, radius_pix);
-
-    splat_pixel_iz_no_bounds(start.0, start.1, im, z_thou.0 as u16, &circle_pixel_iz);
+    draw_toolpath_single_depth(im, p0, p1, radius_pix, circle_pixel_iz);
 
     im.debug_im("test");
 }
