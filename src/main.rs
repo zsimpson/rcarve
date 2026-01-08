@@ -1,10 +1,10 @@
 use rcarve::im::Lum16Im;
 // use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
 // use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
-use rcarve::desc::{Thou};
+use rcarve::desc::Thou;
 // use rcarve::im::label::{LabelInfo, label_im};
 // use rcarve::toolpath::create_surface_toolpaths_from_region_tree;
-// use rcarve::sim::sim_toolpaths;
+use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth, splat_pixel_iz_no_bounds};
 
 #[allow(dead_code)]
 const TEST_JSON: &str = r#"
@@ -86,18 +86,21 @@ const TEST_JSON: &str = r#"
 "#;
 
 fn try_draw() {
-    use rcarve::sim::{draw_line_path_rounded_ends, make_circular_pixel_iz};
-    let tool_dia_pix = 10;
-    let tool_radius_pix = tool_dia_pix / 2;
-    let tool_circle_lut = make_circular_pixel_iz(tool_radius_pix);
-    let im = &mut Lum16Im::new(100, 100);
-    draw_line_path_rounded_ends(
-        &tool_circle_lut,
-        im,
-        (10, 10, Thou(100)),
-        (90, 90, Thou(200)),
-        tool_radius_pix,
-    );
+    let im = &mut Lum16Im::new(1000, 1000);
+    im.arr.fill(1000_u16);
+
+    let radius_pix = 50_usize;
+
+    let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
+    let z_thou = Thou(500);
+
+    let start = (200, 200, z_thou);
+    let end = (800, 800, z_thou);
+
+    draw_toolpath_single_depth(im, start, end, radius_pix);
+
+    splat_pixel_iz_no_bounds(start.0, start.1, im, z_thou.0 as u16, &circle_pixel_iz);
+
     im.debug_im("test");
 }
 
@@ -230,6 +233,4 @@ fn main() {
     //     &cut_bands,
     //     w, h,
     // );
-
-
 }

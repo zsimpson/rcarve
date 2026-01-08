@@ -28,6 +28,30 @@ pub type Lum8Im = Im<u8, 1, Grayscale>;
 pub type Lum16Im = Im<u16, 1, Grayscale>;
 pub type RGBAIm = Im<u8, 4, Rgba>;
 
+/// Minimal trait for working with 1-channel images generically.
+///
+/// This is intentionally small so simulation / drawing code can operate on any
+/// `Im<T, 1, S>` regardless of its semantic tag `S`.
+pub trait Im1Mut<T> {
+    /// Stride in elements (for 1-channel, this is just the image width).
+    fn stride(&self) -> usize;
+
+    /// Mutable access to the underlying linear buffer.
+    fn arr_mut(&mut self) -> &mut [T];
+}
+
+impl<T, S> Im1Mut<T> for Im<T, 1, S> {
+    #[inline]
+    fn stride(&self) -> usize {
+        self.s
+    }
+
+    #[inline]
+    fn arr_mut(&mut self) -> &mut [T] {
+        &mut self.arr
+    }
+}
+
 // Constructor
 // -----------------------------------------------------------------------------
 impl<T: Copy + Default, const N_CH: usize, S> Im<T, N_CH, S> {
