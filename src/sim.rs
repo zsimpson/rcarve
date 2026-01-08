@@ -79,8 +79,8 @@ fn parallelogram_vert_no_bounds_single_z(
     let y1 = y1f.round() as usize;
     while y < y1 {
         let i_at_row = y * stride;
-        let x_lft = (xf + x_lftf).ceil() as usize;
-        let x_rgt = (xf + x_rgtf).floor() as usize;
+        let x_lft = (xf + x_lftf).floor() as usize;
+        let x_rgt = (xf + x_rgtf).ceil() as usize;
 
         let mut i = i_at_row + x_lft;
         let rgt_i = i_at_row + x_rgt;
@@ -120,8 +120,8 @@ fn parallelogram_horz_no_bounds_single_z(
     let x1 = x1f.round() as usize;
     while x < x1 {
         let i_at_col = x;
-        let y_top = (yf + y_topf).ceil() as usize;
-        let y_bot = (yf + t_botf).floor() as usize;
+        let y_top = (yf + y_topf).floor() as usize;
+        let y_bot = (yf + t_botf).ceil() as usize;
 
         let mut i = i_at_col + stride * y_top;
         let bot_i = i_at_col + stride * y_bot;
@@ -352,37 +352,39 @@ fn draw_parallelogram_horz_no_bounds_single_z(
 /// Only set the pixel value if the new value is lower (deeper cut).
 pub fn draw_toolpath_single_depth(
     im: &mut Lum16Im,
-    start: (usize, usize, Thou),
-    end: (usize, usize, Thou),
-    tool_radius_pix: usize,
+    p0: (usize, usize, Thou),
+    p1: (usize, usize, Thou),
+    radius_pix: usize,
     circle_pixel_iz: Vec<isize>,
 ) {
-    let dx = end.0 as isize - start.0 as isize;
-    let dy = end.1 as isize - start.1 as isize;
-    let tmp;
+    debug_assert!(p0.2 == p1.2);
+    let z_u16 = p0.2.0 as u16;
 
-    let mut p0 = start;
-    let mut p1 = end;
+    let dx = p1.0 as isize - p0.0 as isize;
+    let dy = p1.1 as isize - p0.1 as isize;
+    let tmp;
+    let mut q0 = p0;
+    let mut q1 = p1;
 
     if dx != 0 || dy != 0 {
         if dx.abs() >= dy.abs() {
             // Mostly horizontal line
             if dx < 0 {
                 // Swap to make left-to-right
-                tmp = p0;
-                p0 = p1;
-                p1 = tmp;
+                tmp = q0;
+                q0 = q1;
+                q1 = tmp;
             }
-            draw_parallelogram_horz_no_bounds_single_z(im, p0, p1, tool_radius_pix);
+            draw_parallelogram_horz_no_bounds_single_z(im, q0, q1, radius_pix);
         }
         else {
             // Mostly vertical line
-            draw_parallelogram_vert_no_bounds_single_z(im, p0, p1, tool_radius_pix);
+            draw_parallelogram_vert_no_bounds_single_z(im, q0, q1, radius_pix);
         }
 
-        splat_pixel_iz_no_bounds(p0.0, p0.1, im, 800 as u16, &circle_pixel_iz);
+        splat_pixel_iz_no_bounds(q0.0, q0.1, im, z_u16, &circle_pixel_iz);
     }
-    splat_pixel_iz_no_bounds(p1.0, p1.1, im, 800 as u16, &circle_pixel_iz);
+    splat_pixel_iz_no_bounds(q1.0, q1.1, im, z_u16, &circle_pixel_iz);
 }
 
 // Simulate toolpaths into a `Lum16Im` representing the result.
