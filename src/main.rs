@@ -89,12 +89,12 @@ fn try_draw() {
     let im = &mut Lum16Im::new(1000, 1000);
     im.arr.fill(1000_u16);
 
-    let radius_pix = 3_usize;
+    let radius_pix = 20_usize;
 
     let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
     let z_thou = Thou(500);
 
-    let p0 = (200, 200, z_thou);
+    let p0 = (0, 200, z_thou);
     let p1 = (400, 300, z_thou);
 
     draw_toolpath_single_depth(im, p0, p1, radius_pix, circle_pixel_iz);
