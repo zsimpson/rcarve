@@ -12,6 +12,7 @@ pub mod trace;
 pub mod mpoly;
 pub mod dilate_im;
 pub mod mat3;
+mod parallelogram;
 pub mod sim;
 
 #[cfg(test)]
