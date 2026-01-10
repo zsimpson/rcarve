@@ -26,6 +26,7 @@ pub struct Rgba;
 pub type MaskIm = Im<u8, 1, Binary>;
 pub type Lum8Im = Im<u8, 1, Grayscale>;
 pub type Lum16Im = Im<u16, 1, Grayscale>;
+pub type Lum32Im = Im<u32, 1, Grayscale>;
 pub type RGBAIm = Im<u8, 4, Rgba>;
 
 /// Minimal trait for working with 1-channel images generically.
@@ -214,6 +215,21 @@ impl<S> Im<i32, 1, S> {
         mask_im
     }
 }
+
+pub fn copy_mask_im_to_lum32_im(src: &MaskIm, dst: &mut Lum32Im) {
+    assert_eq!(src.w, dst.w, "width mismatch");
+    assert_eq!(src.h, dst.h, "height mismatch");
+
+    for y in 0..src.h {
+        for x in 0..src.w {
+            let v = unsafe { *src.get_unchecked(x, y, 0) };
+            unsafe {
+                *dst.get_unchecked_mut(x, y, 0) = v as u32;
+            }
+        }
+    }
+}
+
 
 pub fn copy_mask_im_to_rgba_im(src: &MaskIm, dst: &mut RGBAIm, r: u8, g: u8, b: u8) {
     assert_eq!(src.w, dst.w, "width mismatch");

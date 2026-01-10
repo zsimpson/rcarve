@@ -1,8 +1,9 @@
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
-use crate::im::MaskIm;
+use crate::im::{Im, MaskIm};
 use crate::im::label::{LabelInfo, ROI};
 use crate::region_tree::{CutBand, PlyIm, RegionIm, RegionNode, RegionRoot};
+use crate::trace::{contours_by_suzuki_abe, Contour};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IV3 {
@@ -15,7 +16,31 @@ pub struct IV3 {
 pub struct ToolPath {
     pub points: Vec<IV3>,
     pub tool_dia_pix: usize,
+    pub tool_i: usize,
 }
+
+
+fn contour_to_toolpath(
+    contour: &Contour,
+    z_thou: Thou,
+    tool_i: usize,
+    tool_dia_pix: usize,
+) -> ToolPath {
+    let mut points: Vec<IV3> = Vec::with_capacity(contour.points.len());
+    for &pt in &contour.points {
+        points.push(IV3 {
+            x: pt.x as i32,
+            y: pt.y as i32,
+            z: z_thou.0,
+        });
+    }
+    ToolPath {
+        points,
+        tool_dia_pix,
+        tool_i,
+    }
+}
+
 
 /// Given a cut mask image (1-channel, 8-bit), generate raster tool paths
 /// that cover all the 'on' pixels in the mask. Starting at the top-left of the ROI,
@@ -27,6 +52,7 @@ pub struct ToolPath {
 fn create_raster_surface_tool_paths_from_cut_mask(
     cut_mask_im: &MaskIm,
     roi: &ROI,
+    tool_i: usize,
     tool_dia_pix: usize,
     tool_step_pix: usize,
     z_thou: Thou,
@@ -89,7 +115,8 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                             z: z_thou.0,
                         },
                     ],
-                    tool_dia_pix
+                    tool_dia_pix,
+                    tool_i,
                 });
             }
         }
@@ -111,6 +138,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                     },
                 ],
                 tool_dia_pix,
+                tool_i,
             });
         }
     }
@@ -130,14 +158,17 @@ fn create_raster_surface_tool_paths_from_cut_mask(
 /// Then we convert these masks into clearing-paths by traversing the mask
 /// and build a RLE representation of the mask along the standard scanlines.
 
-pub fn create_surface_toolpaths_from_region_tree(
+pub fn create_toolpaths_from_region_tree(
     region_root: &RegionRoot,
     cut_bands: &[CutBand],
+    tool_i: usize,
     tool_dia_pix: usize,
     step_size_pix: usize,
     ply_im: &PlyIm,
     region_im: &RegionIm,
     region_infos: &[LabelInfo],
+    gen_perimeters: bool,
+    gen_surfaces: bool,
     mut on_region_masks: Option<
         &mut dyn FnMut(&RegionNode, (usize, usize, usize, usize), &MaskIm, &MaskIm, &MaskIm),
     >,
@@ -157,11 +188,14 @@ pub fn create_surface_toolpaths_from_region_tree(
         cut_mask_im: &mut MaskIm,
         above_mask_im: &mut MaskIm,
         dil_abv_mask_im: &mut MaskIm,
+        tool_i: usize,
         tool_dia_pix: usize,
         step_size_pix: usize,
         ply_im: &PlyIm,
         region_infos: &[LabelInfo],
-        _paths: &mut Vec<ToolPath>,
+        paths: &mut Vec<ToolPath>,
+        gen_perimeters: bool,
+        gen_surfaces: bool,
         on_region_masks: &mut Option<
             &mut dyn FnMut(&RegionNode, (usize, usize, usize, usize), &MaskIm, &MaskIm, &MaskIm),
         >,
@@ -175,11 +209,14 @@ pub fn create_surface_toolpaths_from_region_tree(
                         cut_mask_im,
                         above_mask_im,
                         dil_abv_mask_im,
+                        tool_i,
                         tool_dia_pix,
                         step_size_pix,
                         ply_im,
                         region_infos,
-                        _paths,
+                        paths,
+                        gen_perimeters,
+                        gen_surfaces,
                         on_region_masks,
                     );
                 }
@@ -253,14 +290,39 @@ pub fn create_surface_toolpaths_from_region_tree(
                     }
                 }
 
-                let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
-                    cut_mask_im,
-                    &ROI { l, t, r, b },
-                    tool_dia_pix,
-                    step_size_pix,
-                    z_thou,
-                );
-                _paths.extend(toolpaths);
+                if gen_surfaces {
+                    let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
+                        cut_mask_im,
+                        &ROI { l, t, r, b },
+                        tool_i,
+                        tool_dia_pix,
+                        step_size_pix,
+                        z_thou,
+                    );
+                    paths.extend(toolpaths);
+                }
+
+                if gen_perimeters {
+                    // Suzuki–Abe operates on a 1-channel i32 image and mutates it in-place.
+                    // TODO: Consider a refactor to generate the masks as i32 directly.
+                    let mut cut_mask_im_i32 = Im::<i32, 1>::new(cut_mask_im.w, cut_mask_im.h);
+                    for (dst, &src) in cut_mask_im_i32.arr.iter_mut().zip(cut_mask_im.arr.iter()) {
+                        *dst = if src != 0 { 1 } else { 0 };
+                    }
+
+                    let tolerance = 1.0; // TODO
+                    let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
+                    for contour in contours {
+                        let simp_contour = contour.simplify_by_rdp(tolerance);
+                        let toolpath = contour_to_toolpath(
+                            &simp_contour,
+                            z_thou,
+                            tool_i,
+                            tool_dia_pix,
+                        );
+                        paths.push(toolpath);
+                    }
+                }
 
                 // Optional debug/testing hook: after computing masks for a cut leaf.
                 if let Some(cb) = on_region_masks.as_mut() {
@@ -283,11 +345,14 @@ pub fn create_surface_toolpaths_from_region_tree(
             &mut cut_mask_im,
             &mut above_mask_im,
             &mut dil_above_mask_im,
+            tool_i,
             tool_dia_pix,
             step_size_pix,
             ply_im,
             region_infos,
             &mut paths,
+            gen_perimeters,
+            gen_surfaces,
             &mut on_region_masks,
         );
     }
@@ -357,14 +422,17 @@ mod tests {
 
         let tool_dia_pix = 2_usize;
         let tool_step_pix = 1_usize;
-        let paths = create_surface_toolpaths_from_region_tree(
+        let paths = create_toolpaths_from_region_tree(
             &region_root,
             &cut_bands,
+            0,
             tool_dia_pix,
             tool_step_pix,
             &ply_im,
             &region_im,
             &region_infos,
+            false,
+            true,
             None,
         );
 
@@ -403,7 +471,7 @@ mod tests {
             r: 6,
             b: 3,
         };
-        let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 0, 1, Thou(123));
+        let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 0, 1, 1, Thou(123));
 
         // Expect 1 run on y=0 and 3 runs on y=1.
         assert_eq!(paths.len(), 4);
@@ -542,14 +610,17 @@ mod tests {
         };
 
         // Primary call under test (should not panic).
-        let _paths = create_surface_toolpaths_from_region_tree(
+        let _paths = create_toolpaths_from_region_tree(
             &region_root,
             &cut_bands,
+            0,
             tool_dia_pix,
             tool_step_pix,
             &ply_im,
             &region_im,
             &region_infos,
+            false,
+            true,
             Some(&mut on_region_masks),
         );
 

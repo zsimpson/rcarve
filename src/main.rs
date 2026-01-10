@@ -1,10 +1,10 @@
 use rcarve::im::Lum16Im;
-// use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
-// use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
-use rcarve::desc::Thou;
-// use rcarve::im::label::{LabelInfo, label_im};
-// use rcarve::toolpath::create_surface_toolpaths_from_region_tree;
-use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
+use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
+use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
+use rcarve::im::label::{LabelInfo, label_im};
+use rcarve::toolpath::create_toolpaths_from_region_tree;
+use rcarve::sim::sim_toolpaths;
+// use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
 #[allow(dead_code)]
 const TEST_JSON: &str = r#"
@@ -22,14 +22,14 @@ const TEST_JSON: &str = r#"
             "HZWKZRTQJV": {
                 "owner_layer_guid": "R7Y9XP4VNB",
                 "guid": "HZWKZRTQJV",
-                "top_thou": 950,
+                "top_thou": 850,
                 "hidden": false,
                 "is_floor": false,
                 "mpoly": [
                     {
-                        "exterior": [0,0, 100,0, 100,100, 0,100],
+                        "exterior": [100,100, 400,100, 400,400, 100,400],
                         "holes": [
-                            [20,20, 80,20, 80,80, 20,80]
+                            [200,200, 300,200, 300,300, 200,300]
                         ]
                     }
                 ]
@@ -38,7 +38,7 @@ const TEST_JSON: &str = r#"
                 "owner_layer_guid": "R7Y9XP4VNB",
                 "guid": "ZWKKED69NS",
                 "top_thou": 850,
-                "hidden": false,
+                "hidden": true,
                 "is_floor": false,
                 "mpoly": [
                     {
@@ -85,150 +85,142 @@ const TEST_JSON: &str = r#"
     }
 "#;
 
-fn try_draw() {
-    let im = &mut Lum16Im::new(1000, 1000);
-    im.arr.fill(1000_u16);
-
-    let radius_pix = 20_usize;
-
-    let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
-    let z_thou = Thou(500);
-
-    let p0 = (0, 200, z_thou);
-    let p1 = (400, 300, z_thou);
-
-    draw_toolpath_single_depth(im, p0, p1, radius_pix, circle_pixel_iz);
-
-    im.debug_im("test");
-}
-
 fn main() {
-    try_draw();
+    let roi_l = 0_usize;
+    let roi_t = 0_usize;
+    let roi_r = 500_usize;
+    let roi_b = 500_usize;
+    let w = (roi_r - roi_l) as usize;
+    let h = (roi_b - roi_t) as usize;
 
-    // let roi_l = 0_usize;
-    // let roi_t = 0_usize;
-    // let roi_r = 100_usize;
-    // let roi_b = 100_usize;
-    // let w = (roi_r - roi_l) as usize;
-    // let h = (roi_b - roi_t) as usize;
+    let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
+    // println!("Parsed CompDesc: {:?}", comp_desc);
 
-    // let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
-    // // println!("Parsed CompDesc: {:?}", comp_desc);
+    // Keep plies that are not hidden (and whose layer is not hidden),
+    // then sort bottom-to-top so higher `top_thou` get higher ply indices.
+    let mut sorted_ply_descs: Vec<PlyDesc> = comp_desc
+        .ply_desc_by_guid
+        .values()
+        .filter(|ply_desc| {
+            if ply_desc.hidden {
+                return false;
+            }
+            if let Some(layer) = comp_desc.layer_desc_by_guid.get(&ply_desc.owner_layer_guid) {
+                return !layer.hidden;
+            }
+            true
+        })
+        .cloned()
+        .collect();
 
-    // // Keep plies that are not hidden (and whose layer is not hidden),
-    // // then sort bottom-to-top so higher `top_thou` get higher ply indices.
-    // let mut sorted_ply_descs: Vec<PlyDesc> = comp_desc
-    //     .ply_desc_by_guid
-    //     .values()
-    //     .filter(|ply_desc| {
-    //         if ply_desc.hidden {
-    //             return false;
-    //         }
-    //         if let Some(layer) = comp_desc.layer_desc_by_guid.get(&ply_desc.owner_layer_guid) {
-    //             return !layer.hidden;
-    //         }
-    //         true
-    //     })
-    //     .cloned()
-    //     .collect();
+    sorted_ply_descs.sort_by(|a, b| a.top_thou.cmp(&b.top_thou));
 
-    // sorted_ply_descs.sort_by(|a, b| a.top_thou.cmp(&b.top_thou));
+    // Fiddle with plies for debugging.
+    // Set the ply_mat on every ply
+    for ply_desc in &mut sorted_ply_descs {
+        ply_desc.ply_mat = vec![2.0, 0.0, 0.0, 2.0, 0.0, 0.0];
+    }
 
-    // // Prepend a dummy ply for background (ply_i = 0).
-    // // `create_cut_bands` expects this exact shape.
-    // sorted_ply_descs.insert(
-    //     0,
-    //     PlyDesc {
-    //         owner_layer_guid: Guid("".to_string()),
-    //         guid: Guid("".to_string()),
-    //         top_thou: Thou(0),
-    //         hidden: true,
-    //         is_floor: false,
-    //         ply_mat: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-    //         mpoly: Vec::new(),
-    //     },
-    // );
+    // Prepend a dummy ply for background (ply_i = 0).
+    // `create_cut_bands` expects this exact shape.
+    sorted_ply_descs.insert(
+        0,
+        PlyDesc {
+            owner_layer_guid: Guid("".to_string()),
+            guid: Guid("".to_string()),
+            top_thou: Thou(0),
+            hidden: true,
+            is_floor: false,
+            ply_mat: vec![2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            mpoly: Vec::new(),
+        },
+    );
 
-    // let mut ply_im: PlyIm = PlyIm::new(w, h);
+    let mut ply_im: PlyIm = PlyIm::new(w, h);
 
-    // // From bottom to top, raster each ply into the image using its index as the value.
-    // // Higher plies overwrite lower ones.
-    // for (ply_i, ply_desc) in sorted_ply_descs.iter().enumerate().skip(1) {
-    //     for mpoly in &ply_desc.mpoly {
-    //         let mpoly = mpoly.translated(-(roi_l as i64), -(roi_t as i64));
-    //         if mpoly.is_empty() {
-    //             continue;
-    //         }
+    // From bottom to top, raster each ply into the image using its index as the value.
+    // Higher plies overwrite lower ones.
+    for (ply_i, ply_desc) in sorted_ply_descs.iter().enumerate().skip(1) {
+        for mpoly in &ply_desc.mpoly {
+            let mpoly = mpoly.translated(-(roi_l as i64), -(roi_t as i64));
+            if mpoly.is_empty() {
+                continue;
+            }
 
-    //         mpoly.raster(&mut ply_im, |ply_im, x_start, x_end, y| {
-    //             for x in x_start..x_end {
-    //                 unsafe {
-    //                     *ply_im.get_unchecked_mut(x as usize, y as usize, 0) = ply_i as u16;
-    //                 }
-    //             }
-    //         });
-    //     }
-    // }
+            mpoly.raster(&mut ply_im, |ply_im, x_start, x_end, y| {
+                for x in x_start..x_end {
+                    unsafe {
+                        *ply_im.get_unchecked_mut(x as usize, y as usize, 0) = ply_i as u16;
+                    }
+                }
+            });
+        }
+    }
 
-    // // ply_im.debug_im("ply_im");
+    // ply_im.debug_im("ply_im");
 
-    // let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) = label_im(&ply_im);
-    // let region_im: RegionIm = region_im_raw.retag::<RegionI>();
+    let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) = label_im(&ply_im);
+    let region_im: RegionIm = region_im_raw.retag::<RegionI>();
 
-    // // Print ROI/pixel/neighbors info (skip index 0).
-    // for (label_id, info) in region_infos.iter().enumerate().skip(1) {
-    //     println!(
-    //         "Label {}: size={}, start=({},{}), roi=({},{})->({},{}) px_count={} neigh_count={}",
-    //         label_id,
-    //         info.size,
-    //         info.start_x,
-    //         info.start_y,
-    //         info.roi.l,
-    //         info.roi.t,
-    //         info.roi.r,
-    //         info.roi.b,
-    //         info.pixel_iz.len(),
-    //         info.neighbors.len()
-    //     );
-    // }
+    // Print ROI/pixel/neighbors info (skip index 0).
+    for (label_id, info) in region_infos.iter().enumerate().skip(1) {
+        println!(
+            "Label {}: size={}, start=({},{}), roi=({},{})->({},{}) px_count={} neigh_count={}",
+            label_id,
+            info.size,
+            info.start_x,
+            info.start_y,
+            info.roi.l,
+            info.roi.t,
+            info.roi.r,
+            info.roi.b,
+            info.pixel_iz.len(),
+            info.neighbors.len()
+        );
+    }
 
-    // // region_im.debug_im("region_im");
+    // region_im.debug_im("region_im");
 
-    // let cut_bands = create_cut_bands(
-    //     "rough",
-    //     &ply_im,
-    //     &comp_desc.bands,
-    //     &region_im,
-    //     &region_infos,
-    //     &sorted_ply_descs,
-    // );
+    let cut_bands = create_cut_bands(
+        "rough",
+        &ply_im,
+        &comp_desc.bands,
+        &region_im,
+        &region_infos,
+        &sorted_ply_descs,
+    );
 
-    // let region_root = create_region_tree(&cut_bands, &region_infos);
+    let region_root = create_region_tree(&cut_bands, &region_infos);
 
-    // // TODO un hard-code the tool radius
-    // let tool_dia_pix = 10_usize; // Pixels
+    // TODO un hard-code the tool radius
+    let tool_dia_pix = 20_usize; // Pixels
 
-    // // Raster step size: int(80% of tool radius), clamped to at least 1.
-    // let step_size_pix = (tool_dia_pix.saturating_mul(4) / 5).max(1);
+    // Raster step size: int(80% of tool radius), clamped to at least 1.
+    let step_size_pix = (tool_dia_pix.saturating_mul(4) / 5).max(1);
 
-    // let surface_toolpaths = create_surface_toolpaths_from_region_tree(
-    //     &region_root,
-    //     &cut_bands,
-    //     tool_dia_pix,
-    //     step_size_pix,
-    //     &ply_im,
-    //     &region_im,
-    //     &region_infos,
-    //     None,
-    // );
+    let tool_i = 0; // TODO
 
-    // let mut sim_im = Lum16Im::new(w, h);
-    // sim_im.arr.fill(1000_u16); // TODO real initial heightmap
+    let surface_toolpaths = create_toolpaths_from_region_tree(
+        &region_root,
+        &cut_bands,
+        tool_i,
+        tool_dia_pix,
+        step_size_pix,
+        &ply_im,
+        &region_im,
+        &region_infos,
+        true,
+        true,
+        None,
+    );
 
-    // sim_toolpaths(
-    //     &mut sim_im,
-    //     &surface_toolpaths,
-    //     &cut_bands,
-    //     w, h,
-    // );
+    let mut sim_im = Lum16Im::new(w, h);
+    sim_im.arr.fill(1000_u16); // TODO real initial heightmap
+
+    sim_toolpaths(
+        &mut sim_im,
+        &surface_toolpaths,
+    );
+
+    sim_im.debug_im("sim_im");
 }

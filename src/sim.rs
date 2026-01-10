@@ -1,6 +1,6 @@
 use crate::im::{Im1Mut, Lum16Im};
 // use crate::region_tree::CutBand;
-// use crate::toolpath::ToolPath;
+use crate::toolpath::ToolPath;
 use crate::desc::Thou;
 use crate::parallelogram::{
     draw_parallelogram_horz_no_bounds_single_z,
@@ -121,12 +121,12 @@ fn point_near_bounds(p: (usize, usize, Thou), radius_pix: usize, w: usize, h: us
 /// Draw a line with rounded ends into a Lum16Im, interpolating the height values along the line.
 /// Clip the line to the image bounds before starting.
 /// Only set the pixel value if the new value is lower (deeper cut).
-pub fn draw_toolpath_single_depth(
+pub fn draw_toolpath_segment_single_depth(
     im: &mut Lum16Im,
     p0: (usize, usize, Thou),
     p1: (usize, usize, Thou),
     radius_pix: usize,
-    circle_pixel_iz: Vec<isize>,
+    circle_pixel_iz: &[isize],
 ) {
     debug_assert!(p0.2 == p1.2);
     let z_u16 = p0.2.0 as u16;
@@ -157,6 +157,12 @@ pub fn draw_toolpath_single_depth(
         }
         else {
             // Mostly vertical line
+            if dy < 0 {
+                // Swap to make top-to-bottom
+                tmp = q0;
+                q0 = q1;
+                q1 = tmp;
+            }
             if use_bounded {
                 draw_parallelogram_vert_bounded_single_z(im, q0, q1, radius_pix);
             } else {
@@ -177,14 +183,47 @@ pub fn draw_toolpath_single_depth(
     }
 }
 
-// Simulate toolpaths into a `Lum16Im` representing the result.
-//
-// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
-// pub fn sim_toolpaths(
-//     _im: &mut Lum16Im,
-//     _toolpaths: &Vec<ToolPath>,
-//     _cut_bands: &Vec<CutBand>,
-//     _w: usize,
-//     _h: usize,
-// ) {
-// }
+/// Simulate toolpaths into a `Lum16Im` representing the result.
+/// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
+pub fn sim_toolpaths(
+    im: &mut Lum16Im,
+    toolpaths: &[ToolPath],
+) {
+    if toolpaths.is_empty() {
+        return;
+    }
+
+    // TODO: Multi tool. For now assume the first is the only.
+
+    let tool_dia_pix = 20_usize; // TODO un-hard code
+
+    let radius_pix = tool_dia_pix / 2; //toolpaths[0].tool_dia_pix / 2;
+    let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
+    let z_thou = Thou(toolpaths[0].points[0].z);
+
+    for toolpath in toolpaths {
+        // Traverse consecutive point pairs.
+        for seg in toolpath.points.windows(2) {
+            let p0 = &seg[0];
+            let p1 = &seg[1];
+
+            // Toolpaths should already be within bounds, but keep this robust.
+            // if p0.x < 0 || p0.y < 0 || p1.x < 0 || p1.y < 0 {
+            //     continue;
+            // }
+            let (x0, y0) = (p0.x as usize, p0.y as usize);
+            let (x1, y1) = (p1.x as usize, p1.y as usize);
+            // if x0 >= im.w || y0 >= im.h || x1 >= im.w || y1 >= im.h {
+            //     continue;
+            // }
+
+            draw_toolpath_segment_single_depth(
+                im,
+                (x0, y0, z_thou),
+                (x1, y1, z_thou),
+                radius_pix,
+                &circle_pixel_iz,
+            );
+        }
+    }
+}
