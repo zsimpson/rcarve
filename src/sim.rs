@@ -498,14 +498,8 @@ pub fn sim_toolpaths(
             let p1 = &seg[1];
 
             // Toolpaths should already be within bounds, but keep this robust.
-            // if p0.x < 0 || p0.y < 0 || p1.x < 0 || p1.y < 0 {
-            //     continue;
-            // }
             let (x0, y0) = (p0.x as usize, p0.y as usize);
             let (x1, y1) = (p1.x as usize, p1.y as usize);
-            // if x0 >= im.w || y0 >= im.h || x1 >= im.w || y1 >= im.h {
-            //     continue;
-            // }
 
             draw_toolpath_segment_single_depth(
                 im,

@@ -2,7 +2,7 @@ use rcarve::im::Lum16Im;
 use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
-use rcarve::toolpath::{self, create_toolpaths_from_region_tree};
+use rcarve::toolpath::{create_toolpaths_from_region_tree};
 use rcarve::sim::sim_toolpaths;
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 

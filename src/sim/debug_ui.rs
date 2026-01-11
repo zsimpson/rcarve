@@ -2,7 +2,6 @@ use crate::im::RGBAIm;
 use crate::im::Lum16Im;
 use crate::sim::sim_toolpaths;
 use crate::toolpath::ToolPath;
-use crate::toolpath::IV3;
 use eframe::egui;
 
 #[derive(Clone, Copy, Debug)]
@@ -16,11 +15,6 @@ struct ToolpathMovieApp {
     // Inputs
     base: Lum16Im,
     movie_toolpaths: Vec<ToolPath>,
-
-    // Debug mode state
-    segment_mode: bool,
-    segment_toolpath: ToolPath,
-    segment_mouse_xy: Option<(usize, usize)>,
     tool_dia_pix: usize,
 
     // Movie state
@@ -46,32 +40,10 @@ impl ToolpathMovieApp {
         let sim = Lum16Im::new(w, h);
         let rgba = RGBAIm::new(w, h);
 
-        let cx = w / 2;
-        let cy = h / 2;
-        let segment_toolpath = ToolPath {
-            points: vec![
-                IV3 {
-                    x: cx as i32,
-                    y: cy as i32,
-                    z: 0,
-                },
-                IV3 {
-                    x: cx as i32,
-                    y: cy as i32,
-                    z: 0,
-                },
-            ],
-            tool_dia_pix: 20,
-            tool_i: 0,
-        };
-
         Self {
             title: title.to_owned(),
             base,
             movie_toolpaths: toolpaths,
-            segment_mode: false,
-            segment_toolpath,
-            segment_mouse_xy: None,
             tool_dia_pix: 20,
             applied_count: 0,
             sim,
@@ -81,28 +53,16 @@ impl ToolpathMovieApp {
             dirty: true,
             hover_text: String::new(),
             cmd: String::new(),
-            status: "cmd: tp <i> | frame <n> | next | prev | first | last | tool <pix> | mode <movie|seg> | mul <f32> | reset | help".to_owned(),
+            status: "cmd: tp <i> | frame <n> | next | prev | first | last | tool <pix> | mul <f32> | reset | help".to_owned(),
         }
-    }
-
-    fn center_xy(&self) -> (usize, usize) {
-        (self.sim.w / 2, self.sim.h / 2)
     }
 
     fn toolpath_len(&self) -> usize {
-        if self.segment_mode {
-            1
-        } else {
-            self.movie_toolpaths.len()
-        }
+        self.movie_toolpaths.len()
     }
 
     fn active_toolpaths(&self) -> &[ToolPath] {
-        if self.segment_mode {
-            std::slice::from_ref(&self.segment_toolpath)
-        } else {
-            &self.movie_toolpaths
-        }
+        &self.movie_toolpaths
     }
 
     fn active_toolpath_index(&self) -> Option<usize> {
@@ -122,9 +82,6 @@ impl ToolpathMovieApp {
     }
 
     fn step_applied(&mut self, delta: i32) {
-        if self.segment_mode {
-            return;
-        }
         let cur = self.applied_count as i32;
         let max = self.toolpath_len() as i32;
         let next = (cur + delta).clamp(0, max) as usize;
@@ -154,18 +111,9 @@ impl ToolpathMovieApp {
 
         if self.applied_count > 0 {
             let tool_dia_pix = self.tool_dia_pix;
-
-            if self.segment_mode {
-                let n = self.applied_count.min(1);
-                if n > 0 {
-                    let toolpaths = std::slice::from_ref(&self.segment_toolpath);
-                    sim_toolpaths(&mut self.sim, toolpaths, tool_dia_pix);
-                }
-            } else {
-                let n = self.applied_count.min(self.movie_toolpaths.len());
-                if n > 0 {
-                    sim_toolpaths(&mut self.sim, &self.movie_toolpaths[..n], tool_dia_pix);
-                }
+            let n = self.applied_count.min(self.movie_toolpaths.len());
+            if n > 0 {
+                sim_toolpaths(&mut self.sim, &self.movie_toolpaths[..n], tool_dia_pix);
             }
         }
     }
@@ -220,10 +168,6 @@ impl ToolpathMovieApp {
 
         match cmd {
             "tp" => {
-                if self.segment_mode {
-                    self.status = "tp is disabled in mode=seg".to_owned();
-                    return;
-                }
                 if let Some(v) = it.next() {
                     match v.parse::<usize>() {
                         Ok(i) if i < self.toolpath_len() => {
@@ -243,10 +187,6 @@ impl ToolpathMovieApp {
                 }
             }
             "frame" => {
-                if self.segment_mode {
-                    self.status = "frame is disabled in mode=seg".to_owned();
-                    return;
-                }
                 if let Some(v) = it.next() {
                     match v.parse::<usize>() {
                         Ok(n) => {
@@ -291,35 +231,6 @@ impl ToolpathMovieApp {
                     self.status = "usage: tool <dia_pix>".to_owned();
                 }
             }
-            "mode" => {
-                if let Some(v) = it.next() {
-                    match v {
-                        "seg" | "segment" => {
-                            self.segment_mode = true;
-                            self.applied_count = 1;
-                            let (cx, cy) = self.center_xy();
-                            self.segment_toolpath.points[0].x = cx as i32;
-                            self.segment_toolpath.points[0].y = cy as i32;
-                            self.segment_toolpath.points[1].x = cx as i32;
-                            self.segment_toolpath.points[1].y = cy as i32;
-                            self.segment_mouse_xy = None;
-                            self.dirty = true;
-                            self.status = "mode=seg (center->mouse)".to_owned();
-                        }
-                        "movie" => {
-                            self.segment_mode = false;
-                            self.set_applied_count(0);
-                            self.dirty = true;
-                            self.status = "mode=movie".to_owned();
-                        }
-                        _ => {
-                            self.status = "mode expects `movie` or `seg`".to_owned();
-                        }
-                    }
-                } else {
-                    self.status = "usage: mode <movie|seg>".to_owned();
-                }
-            }
             "mul" => {
                 if let Some(v) = it.next() {
                     match v.parse::<f32>() {
@@ -338,12 +249,11 @@ impl ToolpathMovieApp {
                 self.params.mul = 1.0;
                 self.set_applied_count(0);
                 self.tool_dia_pix = 20;
-                self.segment_mode = false;
                 self.dirty = true;
                 self.status = "reset".to_owned();
             }
             "help" => {
-                self.status = "cmd: tp <i> | frame <n> | next | prev | first | last | tool <pix> | mode <movie|seg> | mul <f32> | reset | help".to_owned();
+                self.status = "cmd: tp <i> | frame <n> | next | prev | first | last | tool <pix> | mul <f32> | reset | help".to_owned();
             }
             _ => {
                 self.status = format!("unknown cmd: {cmd} (try `help`)");
@@ -353,10 +263,6 @@ impl ToolpathMovieApp {
 
     fn handle_hotkeys(&mut self, ctx: &egui::Context) {
         if ctx.wants_keyboard_input() {
-            return;
-        }
-
-        if self.segment_mode {
             return;
         }
 
@@ -401,9 +307,8 @@ impl eframe::App for ToolpathMovieApp {
 
                 ui.separator();
                 ui.monospace(format!(
-                    "tool_dia_pix={} mode={}",
-                    self.tool_dia_pix,
-                    if self.segment_mode { "seg" } else { "movie" }
+                    "tool_dia_pix={}",
+                    self.tool_dia_pix
                 ));
 
                 if !self.hover_text.is_empty() {
@@ -484,29 +389,9 @@ impl eframe::App for ToolpathMovieApp {
                     let src = self.src_text_at(x, y);
                     let viz = self.rgba_text_at(x, y);
                     self.hover_text = format!("x={x} y={y} {src} {viz}");
-
-                    if self.segment_mode {
-                        let (cx, cy) = self.center_xy();
-                        let new_xy = Some((x, y));
-                        if self.segment_mouse_xy != new_xy {
-                            self.segment_mouse_xy = new_xy;
-                            self.segment_toolpath.points[0].x = cx as i32;
-                            self.segment_toolpath.points[0].y = cy as i32;
-                            self.segment_toolpath.points[1].x = x as i32;
-                            self.segment_toolpath.points[1].y = y as i32;
-                            self.applied_count = 1;
-                            self.dirty = true;
-                        }
-                    }
                 }
             }
-
         });
-
-        // If segment mode updated in-panel, regenerate the texture immediately.
-        if self.segment_mode && self.dirty {
-            self.render_if_needed(ctx);
-        }
 
         ctx.request_repaint();
     }
