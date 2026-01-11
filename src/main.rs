@@ -42,7 +42,7 @@ const TEST_JSON: &str = r#"
                 "is_floor": false,
                 "mpoly": [
                     {
-                        "exterior": [10,10, 50,10, 50,50, 10,50],
+                        "exterior": [30,30, 150,30, 150,150, 30,150],
                         "holes": []
                     }
                 ]
@@ -98,34 +98,6 @@ fn main() {
     let roi_b = 500_usize;
     let w = (roi_r - roi_l) as usize;
     let h = (roi_b - roi_t) as usize;
-
-    // use crate::toolpath::{ToolPath, IV3};
-    // let mut im = Lum16Im::new(500, 500);
-    // im.arr.fill(1000);
-    // let segment_toolpath = ToolPath {
-    //     points: vec![
-    //         IV3 {
-    //             x: 0_i32,
-    //             y: 0_i32,
-    //             z: 0,
-    //         },
-    //         IV3 {
-    //             x: 100_i32,
-    //             y: 1000_i32,
-    //             z: 0,
-    //         },
-    //     ],
-    //     tool_dia_pix: 20,
-    //     tool_i: 0,
-    // };
-
-    // sim_toolpaths(
-    //     &mut im,
-    //     &[segment_toolpath],
-    //     20_usize,
-    // );
-    // im.debug_im("im");
-
 
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
     // println!("Parsed CompDesc: {:?}", comp_desc);

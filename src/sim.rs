@@ -1,7 +1,5 @@
 use crate::im::{Im1Mut, Lum16Im};
-// use crate::region_tree::CutBand;
-use crate::toolpath::ToolPath;
-use crate::desc::Thou;
+use crate::toolpath::{IV3, ToolPath};
 
 /// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
 /// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
@@ -112,15 +110,15 @@ pub fn splat_pixel_iz_bounded(
 }
 
 /// Render a triangle into im at a single Z height, without bounds checking.
-pub fn triangle_no_bounds_single_z(a: (isize, isize), b: (isize, isize), c: (isize, isize), im: &mut Lum16Im, z: u16) {
+pub fn triangle_no_bounds_single_z(
+    a: (isize, isize),
+    b: (isize, isize),
+    c: (isize, isize),
+    im: &mut Lum16Im,
+    z: u16,
+) {
     #[inline(always)]
-    fn edge_setup(
-        x0: i64,
-        y0: i64,
-        x1: i64,
-        y1: i64,
-        y_start: i64,
-    ) -> (i64, i64) {
+    fn edge_setup(x0: i64, y0: i64, x1: i64, y1: i64, y_start: i64) -> (i64, i64) {
         debug_assert!(y0 != y1);
         debug_assert!(y0 < y1);
         debug_assert!(y_start >= y0);
@@ -134,7 +132,14 @@ pub fn triangle_no_bounds_single_z(a: (isize, isize), b: (isize, isize), c: (isi
     }
 
     #[inline(always)]
-    fn draw_span_no_bounds_single_z(arr: &mut [u16], stride: usize, y: usize, x0_fp: i64, x1_fp: i64, z: u16) {
+    fn draw_span_no_bounds_single_z(
+        arr: &mut [u16],
+        stride: usize,
+        y: usize,
+        x0_fp: i64,
+        x1_fp: i64,
+        z: u16,
+    ) {
         let (mut left_fp, mut right_fp) = (x0_fp, x1_fp);
         if left_fp > right_fp {
             std::mem::swap(&mut left_fp, &mut right_fp);
@@ -397,27 +402,23 @@ pub fn triangle_with_bounds_single_z(
     }
 }
 
-
-
 #[inline]
-fn point_near_bounds(p: (usize, usize, Thou), radius_pix: usize, w: usize, h: usize) -> bool {
-    p.0 < radius_pix
-        || p.1 < radius_pix
-        || p.0.saturating_add(radius_pix) >= w
-        || p.1.saturating_add(radius_pix) >= h
+fn point_near_bounds(p: IV3, radius_pix: usize, w: usize, h: usize) -> bool {
+    let r = radius_pix as i32;
+    p.x < r || p.y < r || p.x.saturating_add(r) >= w as i32 || p.y.saturating_add(r) >= h as i32
 }
 /// Draw a line with rounded ends into a Lum16Im, interpolating the height values along the line.
 /// Clip the line to the image bounds before starting.
 /// Only set the pixel value if the new value is lower (deeper cut).
 pub fn draw_toolpath_segment_single_depth(
     im: &mut Lum16Im,
-    p0: (usize, usize, Thou),
-    p1: (usize, usize, Thou),
+    p0: IV3,
+    p1: IV3,
     radius_pix: usize,
     circle_pixel_iz: &[isize],
 ) {
-    debug_assert!(p0.2 == p1.2);
-    let z_u16 = p0.2.0 as u16;
+    debug_assert!(p0.z == p1.z);
+    let z_u16 = p0.z.clamp(0, u16::MAX as i32) as u16;
 
     // let dx = p1.0 as isize - p0.0 as isize;
     // let dy = p1.1 as isize - p0.1 as isize;
@@ -430,10 +431,10 @@ pub fn draw_toolpath_segment_single_depth(
 
     let rf = radius_pix as f64;
 
-    let p0x = p0.0 as f64;
-    let p0y = p0.1 as f64;
-    let p1x = p1.0 as f64;
-    let p1y = p1.1 as f64;
+    let p0x = p0.x as f64;
+    let p0y = p0.y as f64;
+    let p1x = p1.x as f64;
+    let p1y = p1.y as f64;
 
     let px = p0x - p1x;
     let py = p0y - p1y;
@@ -446,12 +447,10 @@ pub fn draw_toolpath_segment_single_depth(
     let qx = -ny * rf;
     let qy = nx * rf;
 
-
     let a = ((p0x - qx).round() as isize, (p0y - qy).round() as isize);
     let b = ((p0x + qx).round() as isize, (p0y + qy).round() as isize);
     let c = ((p1x + qx).round() as isize, (p1y + qy).round() as isize);
     let d = ((p1x - qx).round() as isize, (p1y - qy).round() as isize);
-
 
     if use_bounded {
         triangle_with_bounds_single_z(a, b, c, im, z_u16);
@@ -461,26 +460,27 @@ pub fn draw_toolpath_segment_single_depth(
         triangle_no_bounds_single_z(a, c, d, im, z_u16);
     }
 
+    let p0x_usize = p0.x as usize;
+    let p0y_usize = p0.y as usize;
+    let p1x_usize = p1.x as usize;
+    let p1y_usize = p1.y as usize;
+
     if use_bounded {
-        splat_pixel_iz_bounded(p0.0, p0.1, im, z_u16, radius_pix, &circle_pixel_iz);
+        splat_pixel_iz_bounded(p0x_usize, p0y_usize, im, z_u16, radius_pix, &circle_pixel_iz);
     } else {
-        splat_pixel_iz_no_bounds(p0.0, p0.1, im, z_u16, &circle_pixel_iz);
+        splat_pixel_iz_no_bounds(p0x_usize, p0y_usize, im, z_u16, &circle_pixel_iz);
     }
 
     if use_bounded {
-        splat_pixel_iz_bounded(p1.0, p1.1, im, z_u16, radius_pix, &circle_pixel_iz);
+        splat_pixel_iz_bounded(p1x_usize, p1y_usize, im, z_u16, radius_pix, &circle_pixel_iz);
     } else {
-        splat_pixel_iz_no_bounds(p1.0, p1.1, im, z_u16, &circle_pixel_iz);
+        splat_pixel_iz_no_bounds(p1x_usize, p1y_usize, im, z_u16, &circle_pixel_iz);
     }
 }
 
 /// Simulate toolpaths into a `Lum16Im` representing the result.
 /// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
-pub fn sim_toolpaths(
-    im: &mut Lum16Im,
-    toolpaths: &[ToolPath],
-    tool_dia_pix: usize,
-) {
+pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &[ToolPath], tool_dia_pix: usize) {
     if toolpaths.is_empty() {
         return;
     }
@@ -489,22 +489,18 @@ pub fn sim_toolpaths(
 
     let radius_pix = tool_dia_pix / 2; //toolpaths[0].tool_dia_pix / 2;
     let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
-    let z_thou = Thou(toolpaths[0].points[0].z);
+    // let z_thou = Thou(toolpaths[0].points[0].z);
 
     for toolpath in toolpaths {
         // Traverse consecutive point pairs.
         for seg in toolpath.points.windows(2) {
-            let p0 = &seg[0];
-            let p1 = &seg[1];
-
-            // Toolpaths should already be within bounds, but keep this robust.
-            let (x0, y0) = (p0.x as usize, p0.y as usize);
-            let (x1, y1) = (p1.x as usize, p1.y as usize);
+            let p0 = seg[0];
+            let p1 = seg[1];
 
             draw_toolpath_segment_single_depth(
                 im,
-                (x0, y0, z_thou),
-                (x1, y1, z_thou),
+                p0,
+                p1,
                 radius_pix,
                 &circle_pixel_iz,
             );
