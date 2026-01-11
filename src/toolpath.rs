@@ -271,15 +271,30 @@ pub fn create_toolpaths_from_region_tree(
                 let t = label_info.roi.t.saturating_sub(pad);
                 let r = (label_info.roi.r + pad).min(ply_im.w);
                 let b = (label_info.roi.b + pad).min(ply_im.h);
+                let s = ply_im.s;
+                let h = ply_im.h;
+                let wm1 = ply_im.w - 1;
 
                 for y in t..b {
-                    let row = y * ply_im.s;
+                    let row = y * s;
                     for x in l..r {
                         let i = row + x;
                         if ply_im.arr[i] > curr_ply_i {
                             above_mask_im.arr[i] = 255;
                         }
                     }
+                }
+
+                // Add a one-pixel border around the above mask to ensure the edges are excluded from the cut.
+                let s = above_mask_im.s;
+                for y in t..b {
+                    above_mask_im.arr[y * s + 0] = 255;
+                    above_mask_im.arr[y * s + wm1] = 255;
+                }
+                let hm1s = (s * (h - 1)) as usize;
+                for x in l..r {
+                    above_mask_im.arr[x] = 255;
+                    above_mask_im.arr[hm1s + x] = 255;
                 }
 
                 // Dilate the above mask and subtract it from the current region mask.
@@ -305,6 +320,7 @@ pub fn create_toolpaths_from_region_tree(
                 if gen_perimeters {
                     // Suzuki–Abe operates on a 1-channel i32 image and mutates it in-place.
                     // TODO: Consider a refactor to generate the masks as i32 directly.
+                    // TODO: Move this allocation out of the inner loop.
                     let mut cut_mask_im_i32 = Im::<i32, 1>::new(cut_mask_im.w, cut_mask_im.h);
                     for (dst, &src) in cut_mask_im_i32.arr.iter_mut().zip(cut_mask_im.arr.iter()) {
                         *dst = if src != 0 { 1 } else { 0 };

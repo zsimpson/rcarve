@@ -1,5 +1,5 @@
 use rcarve::im::Lum16Im;
-use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree};
+use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::toolpath::create_toolpaths_from_region_tree;
@@ -37,16 +37,12 @@ const TEST_JSON: &str = r#"
             "ZWKKED69NS": {
                 "owner_layer_guid": "R7Y9XP4VNB",
                 "guid": "ZWKKED69NS",
-                "top_thou": 850,
-                "hidden": true,
+                "top_thou": 500,
+                "hidden": false,
                 "is_floor": false,
                 "mpoly": [
                     {
-                        "exterior": [25,40, 35,40, 35,60, 25,60],
-                        "holes": []
-                    },
-                    {
-                        "exterior": [50,40, 55,40, 55,60, 50,60],
+                        "exterior": [10,10, 50,10, 50,50, 10,50],
                         "holes": []
                     }
                 ]
@@ -77,8 +73,18 @@ const TEST_JSON: &str = r#"
                 "cut_pass": "refine"
             },
             {
+                "top_thou": 800,
+                "bot_thou": 0,
+                "cut_pass": "refine"
+            },
+            {
                 "top_thou": 1000,
-                "bot_thou": 200,
+                "bot_thou": 800,
+                "cut_pass": "rough"
+            },
+            {
+                "top_thou": 800,
+                "bot_thou": 0,
                 "cut_pass": "rough"
             }
         ]
@@ -189,6 +195,8 @@ fn main() {
         &region_infos,
         &sorted_ply_descs,
     );
+
+    debug_print_cut_bands(&cut_bands);
 
     let region_root = create_region_tree(&cut_bands, &region_infos);
 
