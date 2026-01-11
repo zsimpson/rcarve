@@ -225,10 +225,23 @@ fn main() {
     let mut sim_im = Lum16Im::new(w, h);
     sim_im.arr.fill(1000_u16); // TODO real initial heightmap
 
+    let base_im = sim_im.clone();
+
     sim_toolpaths(
         &mut sim_im,
         &surface_toolpaths,
     );
 
     sim_im.debug_im("sim_im");
+
+    #[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
+    {
+        if let Err(e) = rcarve::sim::debug_ui::show_toolpath_movie(
+            &base_im,
+            &surface_toolpaths,
+            "sim toolpath movie",
+        ) {
+            println!("show_toolpath_movie: {e}");
+        }
+    }
 }

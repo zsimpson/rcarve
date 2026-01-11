@@ -19,8 +19,13 @@ impl<T: PartialEq, const N_CH: usize, S> PartialEq for Im<T, N_CH, S> {
 
 impl<T: Eq, const N_CH: usize, S> Eq for Im<T, N_CH, S> {}
 
+#[derive(Clone, Copy, Debug)]
 pub struct Binary;
+
+#[derive(Clone, Copy, Debug)]
 pub struct Grayscale;
+
+#[derive(Clone, Copy, Debug)]
 pub struct Rgba;
 
 pub type MaskIm = Im<u8, 1, Binary>;
