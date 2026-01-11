@@ -2,7 +2,7 @@ use rcarve::im::Lum16Im;
 use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
-use rcarve::toolpath::create_toolpaths_from_region_tree;
+use rcarve::toolpath::{self, create_toolpaths_from_region_tree};
 use rcarve::sim::sim_toolpaths;
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
@@ -98,6 +98,34 @@ fn main() {
     let roi_b = 500_usize;
     let w = (roi_r - roi_l) as usize;
     let h = (roi_b - roi_t) as usize;
+
+    // use crate::toolpath::{ToolPath, IV3};
+    // let mut im = Lum16Im::new(500, 500);
+    // im.arr.fill(1000);
+    // let segment_toolpath = ToolPath {
+    //     points: vec![
+    //         IV3 {
+    //             x: 250_i32,
+    //             y: 250_i32,
+    //             z: 0,
+    //         },
+    //         IV3 {
+    //             x: 300_i32,
+    //             y: 300_i32,
+    //             z: 0,
+    //         },
+    //     ],
+    //     tool_dia_pix: 20,
+    //     tool_i: 0,
+    // };
+
+    // sim_toolpaths(
+    //     &mut im,
+    //     &[segment_toolpath],
+    //     20_usize,
+    // );
+    // im.debug_im("im");
+
 
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
     // println!("Parsed CompDesc: {:?}", comp_desc);
@@ -230,9 +258,10 @@ fn main() {
     sim_toolpaths(
         &mut sim_im,
         &surface_toolpaths,
+        20_usize,
     );
 
-    sim_im.debug_im("sim_im");
+    // sim_im.debug_im("sim_im");
 
     #[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
     {

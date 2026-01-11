@@ -117,6 +117,132 @@ pub fn splat_pixel_iz_bounded(
     }
 }
 
+/// Render a triangle into im at a single Z height, without bounds checking.
+pub fn triangle_no_bounds_single_z(a: (isize, isize), b: (isize, isize), c: (isize, isize), im: &mut Lum16Im, z: u16) {
+    #[inline(always)]
+    fn edge_setup(
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+        y_start: i64,
+    ) -> (i64, i64) {
+        debug_assert!(y0 != y1);
+        debug_assert!(y0 < y1);
+        debug_assert!(y_start >= y0);
+        debug_assert!(y_start <= y1);
+
+        let dy = y1 - y0;
+        let dx = x1 - x0;
+        let step_fp = (dx << 16) / dy;
+        let x_start_fp = (x0 << 16) + step_fp * (y_start - y0);
+        (x_start_fp, step_fp)
+    }
+
+    #[inline(always)]
+    fn draw_span_no_bounds_single_z(arr: &mut [u16], stride: usize, y: usize, x0_fp: i64, x1_fp: i64, z: u16) {
+        let (mut left_fp, mut right_fp) = (x0_fp, x1_fp);
+        if left_fp > right_fp {
+            std::mem::swap(&mut left_fp, &mut right_fp);
+        }
+
+        // Inclusive span: [ceil(left), floor(right)].
+        let xl = (left_fp + 0xFFFF) >> 16;
+        let xr = right_fp >> 16;
+        if xl > xr {
+            return;
+        }
+
+        debug_assert!(xl >= 0);
+        debug_assert!(xr >= 0);
+        let row_start = y * stride;
+        let mut i = row_start + (xl as usize);
+        let end_i = row_start + (xr as usize);
+        while i <= end_i {
+            unsafe {
+                let p = arr.get_unchecked_mut(i);
+                if z < *p {
+                    *p = z;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    let stride = im.s;
+    let arr = im.arr_mut();
+
+    // Sort vertices by y, then by x for stability.
+    let mut v = [a, b, c];
+    v.sort_unstable_by(|p, q| p.1.cmp(&q.1).then(p.0.cmp(&q.0)));
+    let (x0, y0) = (v[0].0 as i64, v[0].1 as i64);
+    let (x1, y1) = (v[1].0 as i64, v[1].1 as i64);
+    let (x2, y2) = (v[2].0 as i64, v[2].1 as i64);
+
+    debug_assert!(y0 <= y1 && y1 <= y2);
+    if y0 == y2 {
+        // Degenerate (flat) triangle: just draw the horizontal span on that scanline.
+        let y = y0 as usize;
+        let min_x = x0.min(x1).min(x2);
+        let max_x = x0.max(x1).max(x2);
+        draw_span_no_bounds_single_z(arr, stride, y, min_x << 16, max_x << 16, z);
+        return;
+    }
+
+    // Decide which side the long edge (v0->v2) is on, by comparing its x at y1 to x1.
+    let long_left = if y1 == y0 {
+        // Top is flat; compare at y0+1 (any y in the lower half works).
+        let y_probe = y0 + 1;
+        let x_long_probe_fp = (x0 << 16) + ((x2 - x0) << 16) * (y_probe - y0) / (y2 - y0);
+        x_long_probe_fp < (x1 << 16)
+    } else {
+        let x_long_at_y1_fp = (x0 << 16) + ((x2 - x0) << 16) * (y1 - y0) / (y2 - y0);
+        x_long_at_y1_fp < (x1 << 16)
+    };
+
+    // Top half: y in [y0, y1) using edges (v0->v1) and (v0->v2).
+    if y0 < y1 {
+        let (x_long_fp, long_step_fp) = edge_setup(x0, y0, x2, y2, y0);
+        let (x_short_fp, short_step_fp) = edge_setup(x0, y0, x1, y1, y0);
+
+        let (mut x_left_fp, left_step_fp, mut x_right_fp, right_step_fp) = if long_left {
+            (x_long_fp, long_step_fp, x_short_fp, short_step_fp)
+        } else {
+            (x_short_fp, short_step_fp, x_long_fp, long_step_fp)
+        };
+
+        let mut y = y0;
+        while y < y1 {
+            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z);
+            x_left_fp += left_step_fp;
+            x_right_fp += right_step_fp;
+            y += 1;
+        }
+    }
+
+    // Bottom half: y in [y1, y2] using edges (v1->v2) and (v0->v2).
+    if y1 < y2 {
+        let (x_long_fp, long_step_fp) = edge_setup(x0, y0, x2, y2, y1);
+        let (x_short_fp, short_step_fp) = edge_setup(x1, y1, x2, y2, y1);
+
+        let (mut x_left_fp, left_step_fp, mut x_right_fp, right_step_fp) = if long_left {
+            (x_long_fp, long_step_fp, x_short_fp, short_step_fp)
+        } else {
+            (x_short_fp, short_step_fp, x_long_fp, long_step_fp)
+        };
+
+        let mut y = y1;
+        while y <= y2 {
+            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z);
+            x_left_fp += left_step_fp;
+            x_right_fp += right_step_fp;
+            y += 1;
+        }
+    }
+}
+
+
+
 #[inline]
 fn point_near_bounds(p: (usize, usize, Thou), radius_pix: usize, w: usize, h: usize) -> bool {
     p.0 < radius_pix
@@ -137,55 +263,58 @@ pub fn draw_toolpath_segment_single_depth(
     debug_assert!(p0.2 == p1.2);
     let z_u16 = p0.2.0 as u16;
 
-    let dx = p1.0 as isize - p0.0 as isize;
-    let dy = p1.1 as isize - p0.1 as isize;
-    let tmp;
-    let mut q0 = p0;
-    let mut q1 = p1;
+    // let dx = p1.0 as isize - p0.0 as isize;
+    // let dy = p1.1 as isize - p0.1 as isize;
+    // let tmp;
+    // let mut q0 = p0;
+    // let mut q1 = p1;
 
-    let use_bounded = point_near_bounds(q0, radius_pix, im.w, im.h)
-        || point_near_bounds(q1, radius_pix, im.w, im.h);
+    let use_bounded = point_near_bounds(p0, radius_pix, im.w, im.h)
+        || point_near_bounds(p1, radius_pix, im.w, im.h);
 
-    if dx != 0 || dy != 0 {
-        if dx.abs() >= dy.abs() {
-            // Mostly horizontal line
-            if dx < 0 {
-                // Swap to make left-to-right
-                tmp = q0;
-                q0 = q1;
-                q1 = tmp;
-            }
-            if use_bounded {
-                draw_parallelogram_horz_bounded_single_z(im, q0, q1, radius_pix);
-            } else {
-                draw_parallelogram_horz_no_bounds_single_z(im, q0, q1, radius_pix);
-            }
-        }
-        else {
-            // Mostly vertical line
-            if dy < 0 {
-                // Swap to make top-to-bottom
-                tmp = q0;
-                q0 = q1;
-                q1 = tmp;
-            }
-            if use_bounded {
-                draw_parallelogram_vert_bounded_single_z(im, q0, q1, radius_pix);
-            } else {
-                draw_parallelogram_vert_no_bounds_single_z(im, q0, q1, radius_pix);
-            }
+    let rf = radius_pix as f64;
+
+    let p0x = p0.0 as f64;
+    let p0y = p0.1 as f64;
+    let p1x = p1.0 as f64;
+    let p1y = p1.1 as f64;
+
+    let px = p0x - p1x;
+    let py = p0y - p1y;
+    let p_mag = (px * px + py * py).sqrt();
+    if p_mag == 0.0 {
+        return;
+    }
+    let nx = px / p_mag;
+    let ny = py / p_mag;
+    let qx = -ny * rf;
+    let qy = nx * rf;
+
+
+    let a = ((p0x - qx).round() as isize, (p0y - qy).round() as isize);
+    let b = ((p0x + qx).round() as isize, (p0y + qy).round() as isize);
+    let c = ((p1x + qx).round() as isize, (p1y + qy).round() as isize);
+    let d = ((p1x - qx).round() as isize, (p1y - qy).round() as isize);
+
+
+    // if dx != 0 || dy != 0 {
+        if use_bounded {
+            // draw_parallelogram_vert_bounded_single_z(im, q0, q1, radius_pix);
+        } else {
+            triangle_no_bounds_single_z(a, b, c, im, 0);
+            triangle_no_bounds_single_z(a, c, d, im, 0);
         }
 
         if use_bounded {
-            splat_pixel_iz_bounded(q0.0, q0.1, im, z_u16, radius_pix, &circle_pixel_iz);
+            splat_pixel_iz_bounded(p0.0, p0.1, im, z_u16, radius_pix, &circle_pixel_iz);
         } else {
-            splat_pixel_iz_no_bounds(q0.0, q0.1, im, z_u16, &circle_pixel_iz);
+            splat_pixel_iz_no_bounds(p0.0, p0.1, im, z_u16, &circle_pixel_iz);
         }
-    }
+    // }
     if use_bounded {
-        splat_pixel_iz_bounded(q1.0, q1.1, im, z_u16, radius_pix, &circle_pixel_iz);
+        splat_pixel_iz_bounded(p1.0, p1.1, im, z_u16, radius_pix, &circle_pixel_iz);
     } else {
-        splat_pixel_iz_no_bounds(q1.0, q1.1, im, z_u16, &circle_pixel_iz);
+        splat_pixel_iz_no_bounds(p1.0, p1.1, im, z_u16, &circle_pixel_iz);
     }
 }
 
@@ -194,14 +323,13 @@ pub fn draw_toolpath_segment_single_depth(
 pub fn sim_toolpaths(
     im: &mut Lum16Im,
     toolpaths: &[ToolPath],
+    tool_dia_pix: usize,
 ) {
     if toolpaths.is_empty() {
         return;
     }
 
     // TODO: Multi tool. For now assume the first is the only.
-
-    let tool_dia_pix = 20_usize; // TODO un-hard code
 
     let radius_pix = tool_dia_pix / 2; //toolpaths[0].tool_dia_pix / 2;
     let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
