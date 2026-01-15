@@ -4,6 +4,7 @@ use crate::im::{Im, MaskIm};
 use crate::im::label::{LabelInfo, ROI};
 use crate::region_tree::{CutBand, PlyIm, RegionIm, RegionNode, RegionRoot};
 use crate::trace::{contours_by_suzuki_abe, Contour};
+use crate::debug_ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IV3 {

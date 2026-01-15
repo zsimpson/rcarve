@@ -4,12 +4,6 @@ use crate::toolpath::{IV3, ToolPath};
 /// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
 /// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
 
-// Debug UI window (feature-gated).
-// -----------------------------------------------------------------------------
-
-#[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
-pub mod debug_ui;
-
 /// Return a list of signed pixel indices that form a circular shape centered at (0,0) given the stride .
 pub fn circle_pixel_iz(radius_pix: usize, stride: usize) -> Vec<isize> {
     let mut pixel_iz = Vec::new();

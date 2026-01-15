@@ -168,8 +168,6 @@ fn main() {
         }
     }
 
-    // ply_im.debug_im("ply_im");
-
     debug_ui::add_ply_im("ply_im", &ply_im);
 
     let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) = label_im(&ply_im);
@@ -193,8 +191,6 @@ fn main() {
             info.neighbors.len()
         );
     }
-
-    // region_im.debug_im("region_im");
 
     let cut_bands = create_cut_bands(
         "rough",
