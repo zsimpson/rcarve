@@ -13,6 +13,7 @@ pub mod mpoly;
 pub mod dilate_im;
 pub mod mat3;
 pub mod sim;
+pub mod debug_ui;
 
 #[cfg(test)]
 pub mod test_helpers;

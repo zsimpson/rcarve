@@ -4,6 +4,7 @@ use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::toolpath::{create_toolpaths_from_region_tree};
 use rcarve::sim::sim_toolpaths;
+use rcarve::debug_ui;
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
 #[allow(dead_code)]
@@ -92,6 +93,10 @@ const TEST_JSON: &str = r#"
 "#;
 
 fn main() {
+    // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
+    // in production builds by disabling the `debug_ui` feature.
+    debug_ui::init("rcarve debug");
+
     let roi_l = 0_usize;
     let roi_t = 0_usize;
     let roi_r = 500_usize;
@@ -165,8 +170,12 @@ fn main() {
 
     // ply_im.debug_im("ply_im");
 
+    debug_ui::add_ply_im("ply_im", &ply_im);
+
     let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) = label_im(&ply_im);
     let region_im: RegionIm = region_im_raw.retag::<RegionI>();
+
+    debug_ui::add_region_im("region_im", &region_im);
 
     // Print ROI/pixel/neighbors info (skip index 0).
     for (label_id, info) in region_infos.iter().enumerate().skip(1) {
@@ -227,22 +236,16 @@ fn main() {
 
     let base_im = sim_im.clone();
 
+    debug_ui::add_lum16("sim_base", &base_im);
+
     sim_toolpaths(
         &mut sim_im,
         &surface_toolpaths,
         20_usize,
     );
 
-    // sim_im.debug_im("sim_im");
+    debug_ui::add_lum16("sim_after", &sim_im);
+    debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &surface_toolpaths, 20);
 
-    #[cfg(all(feature = "debug_ui", not(feature = "cli_only")))]
-    {
-        if let Err(e) = rcarve::sim::debug_ui::show_toolpath_movie(
-            &base_im,
-            &surface_toolpaths,
-            "sim toolpath movie",
-        ) {
-            println!("show_toolpath_movie: {e}");
-        }
-    }
+    debug_ui::show();
 }
