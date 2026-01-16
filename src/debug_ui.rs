@@ -488,12 +488,16 @@ mod imp {
                 }
 
                 let titles = self.item_titles();
-                for (i, t) in titles.iter().enumerate() {
-                    let selected = i == self.selected;
-                    if ui.selectable_label(selected, t).clicked() {
-                        self.selected = i;
-                    }
-                }
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (i, t) in titles.iter().enumerate() {
+                            let selected = i == self.selected;
+                            if ui.selectable_label(selected, t).clicked() {
+                                self.selected = i;
+                            }
+                        }
+                    });
             });
 
             egui::CentralPanel::default().show(ctx, |ui| {

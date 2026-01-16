@@ -226,6 +226,8 @@ pub fn create_toolpaths_from_region_tree(
         let curr_ply_i_u16: u16;
         let z_thou: Thou;
 
+        let is_node_floor = matches!(node, RegionNode::Floor { .. });
+
         // Splat in the current node's regions. For floors there is 1+, for cuts there is 1.
         // and find the ROI
         match node {
@@ -243,7 +245,7 @@ pub fn create_toolpaths_from_region_tree(
                     let label_info = &region_infos[label_i];
                     roi.union(label_info.roi);
                 }
-                curr_ply_i_u16 = loweset_ply_i_in_band.0 as u16;
+                curr_ply_i_u16 = (loweset_ply_i_in_band.0 as u16).saturating_sub(1); // Floor uses ply below the lowest in band
                 z_thou = *bottom_thou;
             }
             RegionNode::Cut {
@@ -271,7 +273,7 @@ pub fn create_toolpaths_from_region_tree(
         }
 
         debug_ui::add_mask_im(
-            &format!("cut_mask_im {}", z_thou.0),
+            &format!("cut_mask_im={} is_floor={}", z_thou.0, is_node_floor),
             cut_mask_im,
         );
 
@@ -308,7 +310,7 @@ pub fn create_toolpaths_from_region_tree(
         }
 
         debug_ui::add_mask_im(
-            &format!("region_above_mask {}", z_thou.0),
+            &format!("region_above_mask={} is_floor={}", z_thou.0, is_node_floor),
             above_mask_im,
         );
 
@@ -324,6 +326,11 @@ pub fn create_toolpaths_from_region_tree(
                 }
             }
         }
+
+        debug_ui::add_mask_im(
+            &format!("cut_with_above_removed={} is_floor={}", z_thou.0, is_node_floor),
+            above_mask_im,
+        );
 
         if gen_surfaces {
             let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
