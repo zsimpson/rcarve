@@ -47,11 +47,29 @@ const TEST_JSON: &str = r#"
                         "holes": []
                     }
                 ]
+            },
+            "FLOOR_PLY_DESC": {
+                "owner_layer_guid": "FLOOR_LAYER_DESC",
+                "guid": "FLOOR_PLY_DESC",
+                "top_thou": 100,
+                "hidden": false,
+                "is_floor": true,
+                "mpoly": [
+                    {
+                        "exterior": [0, 0, 500,0, 500,500, 0,500],
+                        "holes": []
+                    }
+                ]
             }
         },
         "layer_desc_by_guid": {
             "R7Y9XP4VNB": {
                 "guid": "R7Y9XP4VNB",
+                "hidden": false,
+                "is_frame": false
+            },
+            "FLOOR_LAYER_DESC": {
+                "guid": "FLOOR_LAYER_DESC",
                 "hidden": false,
                 "is_frame": false
             }

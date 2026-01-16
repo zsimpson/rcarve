@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 macro_rules! newtype {
     ($name:ident($inner:ty)) => {
-        #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+        #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
         pub struct $name(pub $inner);
     };
 }
@@ -363,6 +363,8 @@ pub enum RegionNode {
         /// This is computed from the region neighbor graph restricted to the regions
         /// that are strictly below this band's floor (i.e. in lower bands).
         region_iz: Vec<RegionI>,
+        loweset_ply_i_in_band: PlyI,
+        bottom_thou: Thou,
         children: Vec<RegionNode>,
     },
     /// A leaf region to cut (a single connected component at a specific ply in a band).
@@ -506,6 +508,14 @@ pub fn create_region_tree(cut_bands: &[CutBand], region_infos: &[LabelInfo]) -> 
                 cut_plane_i: floor_plane_i,
                 region_iz,
                 children: Vec::new(),
+                loweset_ply_i_in_band: band
+                    .cut_planes
+                    .iter()
+                    .filter(|cp| !cp.is_floor)
+                    .map(|cp| cp.ply_i)
+                    .min()
+                    .unwrap_or(PlyI(0)),
+                bottom_thou: band.bot_thou.clone(),
             });
         }
 
@@ -611,10 +621,11 @@ pub fn debug_print_region_tree(
         let indent_str = " ".repeat(indent);
         match node {
             RegionNode::Floor {
-            band_i,
-            cut_plane_i,
-            region_iz,
-            children,
+                band_i,
+                cut_plane_i,
+                region_iz,
+                children,
+                ..
             } => {
                 let cp = &cut_bands[*band_i].cut_planes[*cut_plane_i];
                 debug_assert!(cp.is_floor);
@@ -633,9 +644,9 @@ pub fn debug_print_region_tree(
                 }
             }
             RegionNode::Cut {
-            band_i,
-            cut_plane_i,
-            region_i,
+                band_i,
+                cut_plane_i,
+                region_i,
             } => {
                 let cp = &cut_bands[*band_i].cut_planes[*cut_plane_i];
                 debug_assert!(!cp.is_floor);
@@ -974,11 +985,6 @@ mod tests {
         debug_print_cut_bands(&cut_bands);
         println!();
 
-        debug_print_region_tree(
-            &region_root,
-            &cut_bands,
-            &region_infos,
-            0,
-        );
+        debug_print_region_tree(&region_root, &cut_bands, &region_infos, 0);
     }
 }

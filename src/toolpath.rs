@@ -1,9 +1,9 @@
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
-use crate::im::{Im, MaskIm};
 use crate::im::label::{LabelInfo, ROI};
-use crate::region_tree::{CutBand, PlyIm, RegionIm, RegionNode, RegionRoot};
-use crate::trace::{contours_by_suzuki_abe, Contour};
+use crate::im::{Im, MaskIm};
+use crate::region_tree::{CutBand, PlyIm, RegionI, RegionIm, RegionNode, RegionRoot};
+use crate::trace::{Contour, contours_by_suzuki_abe};
 use crate::debug_ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +19,6 @@ pub struct ToolPath {
     pub tool_dia_pix: usize,
     pub tool_i: usize,
 }
-
 
 fn contour_to_toolpath(
     contour: &Contour,
@@ -41,7 +40,6 @@ fn contour_to_toolpath(
         tool_i,
     }
 }
-
 
 /// Given a cut mask image (1-channel, 8-bit), generate raster tool paths
 /// that cover all the 'on' pixels in the mask. Starting at the top-left of the ROI,
@@ -170,9 +168,7 @@ pub fn create_toolpaths_from_region_tree(
     region_infos: &[LabelInfo],
     gen_perimeters: bool,
     gen_surfaces: bool,
-    mut on_region_masks: Option<
-        &mut dyn FnMut(&RegionNode, (usize, usize, usize, usize), &MaskIm, &MaskIm, &MaskIm),
-    >,
+    mut on_region_masks: Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
 ) -> Vec<ToolPath> {
     let w = region_im.w;
     let h = region_im.h;
@@ -181,6 +177,23 @@ pub fn create_toolpaths_from_region_tree(
     let mut dil_above_mask_im = MaskIm::new(w, h);
 
     let mut paths: Vec<ToolPath> = Vec::new();
+
+    fn splat_region_i_into_mask_im(
+        region_i: RegionI,
+        region_infos: &[LabelInfo],
+        mask_im: &mut MaskIm,
+    ) {
+        let label_i = region_i.0 as usize;
+        if label_i == 0 || label_i >= region_infos.len() {
+            return;
+        }
+        let label_info = &region_infos[label_i];
+        for &pix_i in &label_info.pixel_iz {
+            if pix_i < mask_im.arr.len() {
+                mask_im.arr[pix_i] = 255;
+            }
+        }
+    }
 
     // Recurse through the region tree
     fn recurse_region_tree(
@@ -197,12 +210,167 @@ pub fn create_toolpaths_from_region_tree(
         paths: &mut Vec<ToolPath>,
         gen_perimeters: bool,
         gen_surfaces: bool,
-        on_region_masks: &mut Option<
-            &mut dyn FnMut(&RegionNode, (usize, usize, usize, usize), &MaskIm, &MaskIm, &MaskIm),
-        >,
+        on_region_masks: &mut Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
     ) {
+        // TODO: Optimze by clearing on the ROI after the fact
+        cut_mask_im.arr.fill(0);
+        above_mask_im.arr.fill(0);
+        dil_abv_mask_im.arr.fill(0);
+
+        let mut roi: ROI = ROI {
+            l: 0_usize,
+            t: 0_usize,
+            r: 0_usize,
+            b: 0_usize,
+        };
+        let curr_ply_i_u16: u16;
+        let z_thou: Thou;
+
+        // Splat in the current node's regions. For floors there is 1+, for cuts there is 1.
+        // and find the ROI
         match node {
-            RegionNode::Floor { children, .. } => {
+            RegionNode::Floor {
+                region_iz,
+                loweset_ply_i_in_band,
+                bottom_thou,
+                ..
+            } => {
+                for region_i in region_iz {
+                    splat_region_i_into_mask_im(*region_i, region_infos, cut_mask_im);
+
+                    let label_i = region_i.0 as usize;
+                    assert!(label_i < region_infos.len());
+                    let label_info = &region_infos[label_i];
+                    roi.union(label_info.roi);
+                }
+                curr_ply_i_u16 = loweset_ply_i_in_band.0 as u16;
+                z_thou = *bottom_thou;
+            }
+            RegionNode::Cut {
+                band_i,
+                cut_plane_i,
+                region_i,
+            } => {
+                // TODO: Just move the z_thou into the node.
+                z_thou = cut_bands
+                    .get(*band_i)
+                    .and_then(|b| b.cut_planes.get(*cut_plane_i))
+                    .map(|cp| cp.top_thou)
+                    .unwrap_or(Thou(0));
+
+                splat_region_i_into_mask_im(*region_i, region_infos, cut_mask_im);
+
+                let label_i = region_i.0 as usize;
+                assert!(label_i < region_infos.len());
+                let label_info = &region_infos[label_i];
+                roi.union(label_info.roi);
+
+                curr_ply_i_u16 =
+                    ply_im.get_or_default(label_info.start_x, label_info.start_y, 0, 0);
+            }
+        }
+
+        debug_ui::add_mask_im(
+            &format!("cut_mask_im {}", z_thou.0),
+            cut_mask_im,
+        );
+
+        // Dilate the current region into tool-centerable space.
+        im_dilate(cut_mask_im, dil_abv_mask_im, tool_dia_pix);
+        // std::mem::swap(cut_mask_im, dil_abv_mask_im);
+
+        // Extract the above mask by expanding the ROI and copying any ply pixels that
+        // are above the current region's ply threshold.
+        let padded_roi = roi.padded(tool_dia_pix, ply_im.w, ply_im.h);
+
+        // Build the above mask in the padded ROI using the fact that the ply_i is sorted.
+        for y in padded_roi.t..padded_roi.b {
+            let row = y * ply_im.s;
+            for x in padded_roi.l..padded_roi.r {
+                let i = row + x;
+                if ply_im.arr[i] > curr_ply_i_u16 {
+                    above_mask_im.arr[i] = 255;
+                }
+            }
+        }
+
+        // Add a one-pixel border around the above mask to ensure the edges are excluded from the cut.
+        let s = above_mask_im.s;
+        let w_minus_1 = ply_im.w.saturating_sub(1);
+        let h_minus_1_mul_s = ply_im.h.saturating_sub(1) * s;
+        for y in padded_roi.t..padded_roi.b {
+            above_mask_im.arr[y * s + 0] = 255;
+            above_mask_im.arr[y * s + w_minus_1] = 255;
+        }
+        for x in padded_roi.l..padded_roi.r {
+            above_mask_im.arr[x] = 255;
+            above_mask_im.arr[h_minus_1_mul_s + x] = 255;
+        }
+
+        debug_ui::add_mask_im(
+            &format!("region_above_mask {}", z_thou.0),
+            above_mask_im,
+        );
+
+        // Dilate the above mask and subtract it from the current region mask.
+        // TODO: Optimize by limiting the dilation to the padded ROI.
+        im_dilate(above_mask_im, dil_abv_mask_im, tool_dia_pix);
+        for y in padded_roi.t..padded_roi.b {
+            let row = y * ply_im.s;
+            for x in padded_roi.l..padded_roi.r {
+                let i = row + x;
+                if dil_abv_mask_im.arr[i] > 0 {
+                    cut_mask_im.arr[i] = 0;
+                }
+            }
+        }
+
+        if gen_surfaces {
+            let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
+                cut_mask_im,
+                &padded_roi,
+                tool_i,
+                tool_dia_pix,
+                step_size_pix,
+                z_thou,
+            );
+            paths.extend(toolpaths);
+        }
+
+        if gen_perimeters {
+            // Suzuki–Abe operates on a 1-channel i32 image and mutates it in-place.
+            // TODO: Consider a refactor to generate the masks as i32 directly.
+            // TODO: Move this allocation out of the inner loop.
+            let mut cut_mask_im_i32 = Im::<i32, 1>::new(cut_mask_im.w, cut_mask_im.h);
+            for (dst, &src) in cut_mask_im_i32.arr.iter_mut().zip(cut_mask_im.arr.iter()) {
+                *dst = if src != 0 { 1 } else { 0 };
+            }
+
+            let tolerance = 1.0; // TODO
+            let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
+            for contour in contours {
+                let simp_contour = contour.simplify_by_rdp(tolerance);
+                let toolpath = contour_to_toolpath(&simp_contour, z_thou, tool_i, tool_dia_pix);
+                paths.push(toolpath);
+            }
+        }
+
+        // Optional debug/testing hook: after computing masks for a cut leaf.
+        if let Some(cb) = on_region_masks.as_mut() {
+            (**cb)(
+                node,
+                &padded_roi,
+                cut_mask_im,
+                above_mask_im,
+                dil_abv_mask_im,
+            );
+        }
+
+        match node {
+            RegionNode::Floor {
+                children,
+                ..
+            } => {
                 for child in children {
                     recurse_region_tree(
                         child,
@@ -222,136 +390,7 @@ pub fn create_toolpaths_from_region_tree(
                     );
                 }
             }
-            RegionNode::Cut {
-                band_i,
-                cut_plane_i,
-                region_i,
-            } => {
-                let z_thou: Thou = cut_bands
-                    .get(*band_i)
-                    .and_then(|b| b.cut_planes.get(*cut_plane_i))
-                    .map(|cp| cp.top_thou)
-                    .unwrap_or(Thou(0));
-
-                // Fill the two working images with 0.
-
-                // TODO: Optimze by clearing on the ROI after the fact
-                cut_mask_im.arr.fill(0);
-                above_mask_im.arr.fill(0);
-                dil_abv_mask_im.arr.fill(0);
-
-                // Splat in the pixels for this region label.
-                let label_i = region_i.0 as usize;
-                if label_i == 0 || label_i >= region_infos.len() {
-                    return;
-                }
-                let label_info = &region_infos[label_i];
-
-                // Determine the ply threshold for this region.
-                // Higher ply indices are higher Z (more material above).
-                let start_i = label_info.start_y * ply_im.s + label_info.start_x;
-                if start_i >= ply_im.arr.len() {
-                    return;
-                }
-                let curr_ply_i = ply_im.arr[start_i];
-
-                for &pix_i in &label_info.pixel_iz {
-                    if pix_i < cut_mask_im.arr.len() {
-                        cut_mask_im.arr[pix_i] = 255;
-                    }
-                }
-
-                // Dilate the current region into tool-centerable space.
-                im_dilate(cut_mask_im, dil_abv_mask_im, tool_dia_pix);
-                std::mem::swap(cut_mask_im, dil_abv_mask_im);
-
-                // Extract the above mask by expanding the ROI and copying any ply pixels that
-                // are above the current region's ply threshold.
-                let pad = tool_dia_pix;
-                let l = label_info.roi.l.saturating_sub(pad);
-                let t = label_info.roi.t.saturating_sub(pad);
-                let r = (label_info.roi.r + pad).min(ply_im.w);
-                let b = (label_info.roi.b + pad).min(ply_im.h);
-                let s = ply_im.s;
-                let h = ply_im.h;
-                let wm1 = ply_im.w - 1;
-
-                for y in t..b {
-                    let row = y * s;
-                    for x in l..r {
-                        let i = row + x;
-                        if ply_im.arr[i] > curr_ply_i {
-                            above_mask_im.arr[i] = 255;
-                        }
-                    }
-                }
-
-                // Add a one-pixel border around the above mask to ensure the edges are excluded from the cut.
-                let s = above_mask_im.s;
-                for y in t..b {
-                    above_mask_im.arr[y * s + 0] = 255;
-                    above_mask_im.arr[y * s + wm1] = 255;
-                }
-                let hm1s = (s * (h - 1)) as usize;
-                for x in l..r {
-                    above_mask_im.arr[x] = 255;
-                    above_mask_im.arr[hm1s + x] = 255;
-                }
-
-                // Dilate the above mask and subtract it from the current region mask.
-                im_dilate(above_mask_im, dil_abv_mask_im, tool_dia_pix);
-                for i in 0..cut_mask_im.arr.len() {
-                    if dil_abv_mask_im.arr[i] > 0 {
-                        cut_mask_im.arr[i] = 0;
-                    }
-                }
-
-                if gen_surfaces {
-                    let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
-                        cut_mask_im,
-                        &ROI { l, t, r, b },
-                        tool_i,
-                        tool_dia_pix,
-                        step_size_pix,
-                        z_thou,
-                    );
-                    paths.extend(toolpaths);
-                }
-
-                if gen_perimeters {
-                    // Suzuki–Abe operates on a 1-channel i32 image and mutates it in-place.
-                    // TODO: Consider a refactor to generate the masks as i32 directly.
-                    // TODO: Move this allocation out of the inner loop.
-                    let mut cut_mask_im_i32 = Im::<i32, 1>::new(cut_mask_im.w, cut_mask_im.h);
-                    for (dst, &src) in cut_mask_im_i32.arr.iter_mut().zip(cut_mask_im.arr.iter()) {
-                        *dst = if src != 0 { 1 } else { 0 };
-                    }
-
-                    let tolerance = 1.0; // TODO
-                    let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
-                    for contour in contours {
-                        let simp_contour = contour.simplify_by_rdp(tolerance);
-                        let toolpath = contour_to_toolpath(
-                            &simp_contour,
-                            z_thou,
-                            tool_i,
-                            tool_dia_pix,
-                        );
-                        paths.push(toolpath);
-                    }
-                }
-
-                // Optional debug/testing hook: after computing masks for a cut leaf.
-                if let Some(cb) = on_region_masks.as_mut() {
-                    (**cb)(
-                        node,
-                        (l, t, r, b),
-                        cut_mask_im,
-                        above_mask_im,
-                        dil_abv_mask_im,
-                    );
-                }
-            }
+            RegionNode::Cut { .. } => {}
         }
     }
 
@@ -598,27 +637,21 @@ mod tests {
         let tool_dia_pix = 2_usize;
         let tool_step_pix = 2_usize;
 
-        let mut node_results: Vec<(
-            RegionNode,
-            (usize, usize, usize, usize),
-            MaskIm,
-            MaskIm,
-            MaskIm,
-        )> = Vec::new();
+        let mut node_results: Vec<(RegionNode, ROI, MaskIm, MaskIm, MaskIm)> = Vec::new();
         let snapshot = |src: &MaskIm| {
             let mut dst = MaskIm::new(src.w, src.h);
             dst.arr.copy_from_slice(&src.arr);
             dst
         };
         let mut on_region_masks = |node: &RegionNode,
-                                   roi_pad: (usize, usize, usize, usize),
+                                   roi_pad: &ROI,
                                    cut_mask_im: &MaskIm,
                                    above_mask_im: &MaskIm,
                                    dil_abv_mask_im: &MaskIm| {
             if matches!(node, RegionNode::Cut { .. }) {
                 node_results.push((
                     node.clone(),
-                    roi_pad,
+                    *roi_pad,
                     snapshot(cut_mask_im),
                     snapshot(above_mask_im),
                     snapshot(dil_abv_mask_im),
@@ -655,7 +688,7 @@ mod tests {
             "expected one callback per cut leaf"
         );
 
-        for (i, (region_node, (l, t, r, b), cut_m, above_m, dil_abv_m)) in
+        for (i, (region_node, roi_pad, cut_m, above_m, dil_abv_m)) in
             node_results.iter().enumerate()
         {
             // Derive the ply value for this cut leaf via the region label's start_x/start_y.
@@ -690,13 +723,7 @@ mod tests {
             println!("cut[{i}] region_node: {:?}", region_node);
             println!("cut[{i}] label_i: {label_i}, curr_ply_i: {:?}", curr_ply_i);
             // Outline the padded ROI actually used for above-mask extraction.
-            let roi_pad = ROI {
-                l: *l,
-                t: *t,
-                r: *r,
-                b: *b,
-            };
-            let roi_opt = Some(&roi_pad);
+            let roi_opt = Some(roi_pad);
 
             println!(
                 "cut[{i}] at_mask (label pixels):\n{}",

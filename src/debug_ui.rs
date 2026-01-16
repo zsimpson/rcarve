@@ -270,6 +270,61 @@ mod imp {
         add_u8_1(title, im);
     }
 
+    /// Create a new 1-channel mask image and set pixels along the rectangle border.
+    ///
+    /// Coordinates are interpreted like an ROI: left/top inclusive, right/bottom exclusive.
+    /// The created image size defaults to `w=r` and `h=b` so the rect always fits.
+    pub fn add_rect(l: usize, t: usize, r: usize, b: usize) {
+        if r == 0 || b == 0 {
+            return;
+        }
+
+        let mut im = MaskIm::new(r, b);
+
+        // Clamp ROI to image bounds.
+        let l = l.min(im.w);
+        let t = t.min(im.h);
+        let r = r.min(im.w);
+        let b = b.min(im.h);
+        if l >= r || t >= b {
+            add_mask_im(&format!("rect empty l={l} t={t} r={r} b={b}"), &im);
+            return;
+        }
+
+        let xm1 = r.saturating_sub(1);
+        let ym1 = b.saturating_sub(1);
+
+        // Horizontal edges.
+        if t < im.h {
+            let row = t * im.s;
+            for x in l..r {
+                im.arr[row + x] = 255;
+            }
+        }
+        if b >= 2 {
+            let y = ym1;
+            let row = y * im.s;
+            for x in l..r {
+                im.arr[row + x] = 255;
+            }
+        }
+
+        // Vertical edges.
+        if l < im.w {
+            for y in t..b {
+                im.arr[y * im.s + l] = 255;
+            }
+        }
+        if r >= 2 {
+            let x = xm1;
+            for y in t..b {
+                im.arr[y * im.s + x] = 255;
+            }
+        }
+
+        add_mask_im(&format!("rect l={l} t={t} r={r} b={b}"), &im);
+    }
+
     pub fn add_ply_im(title: &str, im: &PlyIm) {
         add_u16_1(title, im);
     }
@@ -346,7 +401,10 @@ mod imp {
             (title, items)
         };
 
-        let options = eframe::NativeOptions { ..Default::default() };
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size(egui::vec2(1200.0, 800.0)),
+            ..Default::default()
+        };
         let window_title = title.clone();
 
         // Debugger ergonomics: if this fails, just panic.
@@ -1017,7 +1075,10 @@ mod imp {
     // -------------------------------------------------------------------------
 
     fn run_single_image(title: &str, src: SourceIm) -> Result<(), String> {
-        let options = eframe::NativeOptions { ..Default::default() };
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size(egui::vec2(1200.0, 800.0)),
+            ..Default::default()
+        };
         let title_owned = title.to_owned();
         eframe::run_native(
             title,
@@ -1049,7 +1110,10 @@ mod imp {
     }
 
     fn run_single_movie(title: &str, base: Lum16Im, toolpaths: Vec<ToolPath>, tool_dia_pix: usize) -> Result<(), String> {
-        let options = eframe::NativeOptions { ..Default::default() };
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size(egui::vec2(1200.0, 800.0)),
+            ..Default::default()
+        };
         let title_owned = title.to_owned();
         eframe::run_native(
             title,
@@ -1077,6 +1141,7 @@ mod imp {
     }
 }
 
+/// No-op implementations when debug_ui feature is disabled or cli_only is enabled.
 #[cfg(not(all(feature = "debug_ui", not(feature = "cli_only"))))]
 mod imp {
     use crate::im::{Im, Lum16Im, RGBAIm};
@@ -1093,6 +1158,8 @@ mod imp {
     pub fn add_mask_im(_title: &str, _im: &MaskIm) {}
     pub fn add_ply_im(_title: &str, _im: &PlyIm) {}
     pub fn add_region_im(_title: &str, _im: &RegionIm) {}
+
+    pub fn add_rect(_l: usize, _t: usize, _r: usize, _b: usize) {}
 
     pub fn add_lum16(_title: &str, _im: &Lum16Im) {}
     pub fn add_rgba(_title: &str, _im: &RGBAIm) {}

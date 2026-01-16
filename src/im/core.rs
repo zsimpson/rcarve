@@ -91,6 +91,17 @@ impl<T, const N_CH: usize, S> Im<T, N_CH, S> {
     }
 
     #[inline(always)]
+    pub fn get_or_default(&self, x: usize, y: usize, ch: usize, default: T) -> T
+    where
+        T: Copy,
+    {
+        self.arr
+            .get(y * self.s + x * N_CH + ch)
+            .copied()
+            .unwrap_or(default)
+    }
+
+    #[inline(always)]
     pub unsafe fn get_unchecked(&self, x: usize, y: usize, ch: usize) -> &T {
         unsafe { self.arr.get_unchecked(y * self.s + x * N_CH + ch) }
     }
