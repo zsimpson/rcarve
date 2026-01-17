@@ -1,51 +1,6 @@
 {
 	"files": [
 		{
-			"path": "src/main.rs",
-			"bookmarks": [
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": 224,
-					"column": 28
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				},
-				{
-					"line": -1,
-					"column": 0
-				}
-			]
-		},
-		{
 			"path": "src/region_tree.rs",
 			"bookmarks": [
 				{
@@ -57,7 +12,7 @@
 					"column": 0
 				},
 				{
-					"line": 415,
+					"line": 484,
 					"column": 11
 				},
 				{
@@ -106,7 +61,7 @@
 					"column": 0
 				},
 				{
-					"line": 282,
+					"line": 283,
 					"column": 30
 				},
 				{
