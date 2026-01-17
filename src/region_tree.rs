@@ -356,6 +356,8 @@ pub enum RegionNode {
     /// A floor node gates access to deeper bands.
     /// Cutting the floor reveals its children, which are 1+ regions in lower bands.
     Floor {
+        node_id: usize,
+        parent_id: Option<usize>,
         band_i: usize,
         cut_plane_i: usize,
         /// The connected set of region labels that make up this floor component.
@@ -369,10 +371,37 @@ pub enum RegionNode {
     },
     /// A leaf region to cut (a single connected component at a specific ply in a band).
     Cut {
+        node_id: usize,
+        parent_id: Option<usize>,
         band_i: usize,
         cut_plane_i: usize,
         region_i: RegionI,
+        z_thou: Thou,
     },
+}
+
+fn assign_ids_and_parents(nodes: &mut [RegionNode], parent_id: Option<usize>, next_id: &mut usize) {
+    for node in nodes.iter_mut() {
+        let my_id = *next_id;
+        *next_id += 1;
+
+        match node {
+            RegionNode::Floor {
+                node_id,
+                parent_id: pid,
+                children,
+                ..
+            } => {
+                *node_id = my_id;
+                *pid = parent_id;
+                assign_ids_and_parents(children, Some(my_id), next_id);
+            }
+            RegionNode::Cut { node_id, parent_id: pid, .. } => {
+                *node_id = my_id;
+                *pid = parent_id;
+            }
+        }
+    }
 }
 
 /// A RegionNode represents a single region. But the Floor nodes are special, they represent the union multiple regions below them. Many of those child regions will be contiguous but sometimes there mught be discontiguous parts. In the discontiguous case there'd be more than one floor RegionNode in a given band. So I need to rethink how to model this,. I'm thinknig that in create_region_tree in each band I make a new maskIm for each floor by using the ply_im to extrqact all pixels where the ply_i < the smallest ply_i of the current band. Then we call label on
@@ -448,10 +477,15 @@ pub fn create_region_tree(cut_bands: &[CutBand], region_infos: &[LabelInfo]) -> 
                 continue;
             }
             for &region_i in &cut_plane.region_iz {
+                let z_thou = cut_plane.top_thou.clone();
+
                 nodes_within_band.push(RegionNode::Cut {
+                    node_id: usize::MAX,
+                    parent_id: None,
                     band_i,
                     cut_plane_i,
                     region_i,
+                    z_thou
                 });
             }
         }
@@ -504,6 +538,8 @@ pub fn create_region_tree(cut_bands: &[CutBand], region_infos: &[LabelInfo]) -> 
 
         for region_iz in floor_region_iz {
             nodes_within_band.push(RegionNode::Floor {
+                node_id: usize::MAX,
+                parent_id: None,
                 band_i,
                 cut_plane_i: floor_plane_i,
                 region_iz,
@@ -600,6 +636,10 @@ pub fn create_region_tree(cut_bands: &[CutBand], region_infos: &[LabelInfo]) -> 
     let mut roots = std::mem::take(&mut nodes_per_band[0]);
     prune_empty_floors(&mut roots);
 
+    // Now that the tree structure is finalized, assign stable ids and parent links.
+    let mut next_id = 0usize;
+    assign_ids_and_parents(&mut roots, None, &mut next_id);
+
     RegionRoot { children: roots }
 }
 
@@ -614,6 +654,7 @@ pub fn debug_print_region_tree(
 
     fn debug_print_region_tree_node(
         node: &RegionNode,
+        path: &str,
         cut_bands: &[CutBand],
         region_infos: &[LabelInfo],
         indent: usize,
@@ -621,6 +662,8 @@ pub fn debug_print_region_tree(
         let indent_str = " ".repeat(indent);
         match node {
             RegionNode::Floor {
+                node_id,
+                parent_id,
                 band_i,
                 cut_plane_i,
                 region_iz,
@@ -630,8 +673,11 @@ pub fn debug_print_region_tree(
                 let cp = &cut_bands[*band_i].cut_planes[*cut_plane_i];
                 debug_assert!(cp.is_floor);
                 println!(
-                    "{}Floor: band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, num_floor_regions={}, num_children={}",
+                    "{}{}: Floor: id={}, parent_id={:?}, band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, num_floor_regions={}, num_children={}",
                     indent_str,
+                    path,
+                    node_id,
+                    parent_id,
                     band_i,
                     cut_plane_i,
                     cp.ply_guid.0,
@@ -639,21 +685,28 @@ pub fn debug_print_region_tree(
                     region_iz.len(),
                     children.len()
                 );
-                for child in children {
-                    debug_print_region_tree_node(child, cut_bands, region_infos, indent + 2);
+                for (i, child) in children.iter().enumerate() {
+                    let child_path = format!("{}.{}", path, i);
+                    debug_print_region_tree_node(child, &child_path, cut_bands, region_infos, indent + 2);
                 }
             }
             RegionNode::Cut {
+                node_id,
+                parent_id,
                 band_i,
                 cut_plane_i,
                 region_i,
+                ..
             } => {
                 let cp = &cut_bands[*band_i].cut_planes[*cut_plane_i];
                 debug_assert!(!cp.is_floor);
                 let region_info = &region_infos[region_i.0 as usize];
                 println!(
-                    "{}Cut: band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, region_i={}, region_size={}",
+                    "{}{}: Cut: id={}, parent_id={:?}, band_i={}, cut_plane_i={}, ply_guid={}, top_thou={:?}, region_i={}, region_size={}",
                     indent_str,
+                    path,
+                    node_id,
+                    parent_id,
                     band_i,
                     cut_plane_i,
                     cp.ply_guid.0,
@@ -665,8 +718,8 @@ pub fn debug_print_region_tree(
         }
     }
 
-    for child in &root.children {
-        debug_print_region_tree_node(child, cut_bands, region_infos, indent + 2);
+    for (i, child) in root.children.iter().enumerate() {
+        debug_print_region_tree_node(child, &format!("{}", i), cut_bands, region_infos, indent + 2);
     }
 }
 
@@ -941,13 +994,25 @@ mod tests {
         let mut total_children = 0usize;
         for f in &root_floors {
             let RegionNode::Floor {
-                band_i, children, ..
+                node_id,
+                parent_id,
+                band_i,
+                children,
+                ..
             } = *f
             else {
                 unreachable!();
             };
             assert_eq!(*band_i, 0);
+            assert!(parent_id.is_none(), "root-level nodes must have parent_id=None");
             total_children += children.len();
+            for c in children.iter() {
+                match c {
+                    RegionNode::Floor { parent_id: pid, .. } | RegionNode::Cut { parent_id: pid, .. } => {
+                        assert_eq!(*pid, Some(*node_id), "child.parent_id must equal parent's node_id");
+                    }
+                }
+            }
         }
         // Band 1's floor is pruned because it has no children, so only the 3 cut nodes remain.
         assert_eq!(total_children, 3, "next band should contribute 3 cut nodes");
@@ -956,9 +1021,7 @@ mod tests {
         fn accumulate_cut_counts(nodes: &[RegionNode], counts: &mut Vec<usize>) {
             for n in nodes {
                 match n {
-                    RegionNode::Floor {
-                        band_i, children, ..
-                    } => {
+                    RegionNode::Floor { band_i, children, .. } => {
                         if *band_i >= counts.len() {
                             counts.resize(*band_i + 1, 0);
                         }

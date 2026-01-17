@@ -1,10 +1,10 @@
+use crate::debug_ui;
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
 use crate::im::label::{LabelInfo, ROI};
 use crate::im::{Im, MaskIm};
 use crate::region_tree::{CutBand, PlyIm, RegionI, RegionIm, RegionNode, RegionRoot};
 use crate::trace::{Contour, contours_by_suzuki_abe};
-use crate::debug_ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IV3 {
@@ -18,27 +18,71 @@ pub struct ToolPath {
     pub points: Vec<IV3>,
     pub tool_dia_pix: usize,
     pub tool_i: usize,
+    pub cut_band_i: usize,
 }
 
-fn contour_to_toolpath(
+fn create_perimeter_tool_paths(
     contour: &Contour,
-    z_thou: Thou,
+    target_z_thou: Thou,
     tool_i: usize,
     tool_dia_pix: usize,
-) -> ToolPath {
+) -> Vec<ToolPath> {
+    let z = target_z_thou.0;
     let mut points: Vec<IV3> = Vec::with_capacity(contour.points.len());
     for &pt in &contour.points {
         points.push(IV3 {
             x: pt.x as i32,
             y: pt.y as i32,
-            z: z_thou.0,
+            z,
         });
     }
-    ToolPath {
+
+    vec![ToolPath {
         points,
         tool_dia_pix,
         tool_i,
+        cut_band_i: 0, // Set later
+    }]
+}
+
+fn repeat_toolpaths(
+    base_toolpaths: Vec<ToolPath>,
+    target_z_thou: Thou,
+    parent_z_thou: Thou,
+    z_step_thou: Thou,
+) -> Vec<ToolPath> {
+    if base_toolpaths.is_empty() {
+        return base_toolpaths;
     }
+
+    let target_z = target_z_thou.0;
+    let step = z_step_thou.0.max(1);
+    let mut z = parent_z_thou.0.max(target_z);
+    let next_z = z.saturating_sub(step);
+    z = if next_z < target_z { target_z } else { next_z };
+
+    // If parent is already at/below the target, nothing to expand.
+    if z <= target_z {
+        return base_toolpaths;
+    }
+
+    // Create copies at intermediate Zs, then append the originals (which are at target Z).
+    let mut out: Vec<ToolPath> = Vec::new();
+    while z > target_z {
+        for tp in &base_toolpaths {
+            let mut tp2 = tp.clone();
+            for pt in &mut tp2.points {
+                pt.z = z;
+            }
+            out.push(tp2);
+        }
+
+        let next_z = z.saturating_sub(step);
+        z = if next_z < target_z { target_z } else { next_z };
+    }
+
+    out.extend(base_toolpaths);
+    out
 }
 
 /// Given a cut mask image (1-channel, 8-bit), generate raster tool paths
@@ -116,6 +160,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                     ],
                     tool_dia_pix,
                     tool_i,
+                    cut_band_i: 0, // Set later
                 });
             }
         }
@@ -138,6 +183,8 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                 ],
                 tool_dia_pix,
                 tool_i,
+                cut_band_i: 0, // Set later
+
             });
         }
     }
@@ -169,6 +216,7 @@ pub fn create_toolpaths_from_region_tree(
     gen_perimeters: bool,
     gen_surfaces: bool,
     mut on_region_masks: Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
+    bulk_z_thou: Thou,
 ) -> Vec<ToolPath> {
     let w = region_im.w;
     let h = region_im.h;
@@ -211,6 +259,7 @@ pub fn create_toolpaths_from_region_tree(
         gen_perimeters: bool,
         gen_surfaces: bool,
         on_region_masks: &mut Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
+        parent_z_thou: Thou,
     ) {
         // TODO: Optimze by clearing on the ROI after the fact
         cut_mask_im.arr.fill(0);
@@ -249,16 +298,13 @@ pub fn create_toolpaths_from_region_tree(
                 z_thou = *bottom_thou;
             }
             RegionNode::Cut {
-                band_i,
-                cut_plane_i,
+                band_i: _,
+                cut_plane_i: _,
                 region_i,
+                z_thou: node_z_thou,
+                ..
             } => {
-                // TODO: Just move the z_thou into the node.
-                z_thou = cut_bands
-                    .get(*band_i)
-                    .and_then(|b| b.cut_planes.get(*cut_plane_i))
-                    .map(|cp| cp.top_thou)
-                    .unwrap_or(Thou(0));
+                z_thou = node_z_thou.clone();
 
                 splat_region_i_into_mask_im(*region_i, region_infos, cut_mask_im);
 
@@ -328,9 +374,14 @@ pub fn create_toolpaths_from_region_tree(
         }
 
         debug_ui::add_mask_im(
-            &format!("cut_with_above_removed={} is_floor={}", z_thou.0, is_node_floor),
+            &format!(
+                "cut_with_above_removed={} is_floor={}",
+                z_thou.0, is_node_floor
+            ),
             above_mask_im,
         );
+
+        let mut node_toolpaths: Vec<ToolPath> = Vec::new();
 
         if gen_surfaces {
             let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
@@ -341,7 +392,7 @@ pub fn create_toolpaths_from_region_tree(
                 step_size_pix,
                 z_thou,
             );
-            paths.extend(toolpaths);
+            node_toolpaths.extend(toolpaths);
         }
 
         if gen_perimeters {
@@ -357,10 +408,17 @@ pub fn create_toolpaths_from_region_tree(
             let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
             for contour in contours {
                 let simp_contour = contour.simplify_by_rdp(tolerance);
-                let toolpath = contour_to_toolpath(&simp_contour, z_thou, tool_i, tool_dia_pix);
-                paths.push(toolpath);
+                let toolpaths =
+                    create_perimeter_tool_paths(&simp_contour, z_thou, tool_i, tool_dia_pix);
+                node_toolpaths.extend(toolpaths);
             }
         }
+
+        // After generating surface + perimeter toolpaths at the target Z, add repeated passes
+        // at intermediate Z steps down from the parent plane.
+        let z_step_thou = Thou(50);
+        let node_toolpaths = repeat_toolpaths(node_toolpaths, z_thou, parent_z_thou, z_step_thou);
+        paths.extend(node_toolpaths);
 
         // Optional debug/testing hook: after computing masks for a cut leaf.
         if let Some(cb) = on_region_masks.as_mut() {
@@ -374,10 +432,7 @@ pub fn create_toolpaths_from_region_tree(
         }
 
         match node {
-            RegionNode::Floor {
-                children,
-                ..
-            } => {
+            RegionNode::Floor { children, .. } => {
                 for child in children {
                     recurse_region_tree(
                         child,
@@ -394,6 +449,7 @@ pub fn create_toolpaths_from_region_tree(
                         gen_perimeters,
                         gen_surfaces,
                         on_region_masks,
+                        z_thou,
                     );
                 }
             }
@@ -417,6 +473,7 @@ pub fn create_toolpaths_from_region_tree(
             gen_perimeters,
             gen_surfaces,
             &mut on_region_masks,
+            bulk_z_thou,
         );
     }
 
@@ -497,6 +554,7 @@ mod tests {
             false,
             true,
             None,
+            Thou(0),
         );
 
         assert!(!paths.is_empty(), "expected non-empty raster toolpaths");
@@ -679,6 +737,7 @@ mod tests {
             false,
             true,
             Some(&mut on_region_masks),
+            Thou(0),
         );
 
         // Dump ascii maps for visual inspection.
@@ -761,3 +820,62 @@ mod tests {
         }
     }
 }
+
+/// Every toolpath must have its cut_band_i assigned based on its Z value
+/// so that the sorted can group cut_bands together.
+pub fn assign_band_i_to_tool_paths(cut_bands: &[CutBand], toolpaths: &mut Vec<ToolPath>) {
+    use std::collections::{BTreeSet, HashMap};
+
+    if cut_bands.is_empty() || toolpaths.is_empty() {
+        return;
+    }
+
+    // Toolpaths are numerous, but the number of distinct Z values is small.
+    // Build a Z -> band_i lookup table once, then assign in a second pass.
+    let mut unique_z: BTreeSet<i32> = BTreeSet::new();
+    for tp in toolpaths.iter() {
+        if let Some(p0) = tp.points.first() {
+            unique_z.insert(p0.z);
+        }
+    }
+
+    let mut z_to_band_i: HashMap<i32, usize> = HashMap::with_capacity(unique_z.len());
+    for z in unique_z {
+        let mut match_i: Option<usize> = None;
+        for (band_i, band) in cut_bands.iter().enumerate() {
+            let top = band.top_thou.0;
+            let bot = band.bot_thou.0;
+            // Band range semantics: top is exclusive, bottom is inclusive.
+            if bot <= z && z < top {
+                match_i = Some(band_i);
+                break;
+            }
+        }
+
+        let band_i = match_i.unwrap_or_else(|| {
+            panic!(
+                "no CutBand contains z_thou={}; bands are [bot_thou, top_thou): {:?}",
+                z,
+                cut_bands
+                    .iter()
+                    .map(|b| (b.bot_thou.0, b.top_thou.0))
+                    .collect::<Vec<_>>()
+            )
+        });
+        z_to_band_i.insert(z, band_i);
+    }
+
+    for tp in toolpaths.iter_mut() {
+        let Some(p0) = tp.points.first() else {
+            continue;
+        };
+        let band_i = *z_to_band_i.get(&p0.z).unwrap();
+        tp.cut_band_i = band_i;
+        debug_assert!(tp.points.iter().all(|p| p.z == p0.z), "toolpath has mixed Z values");
+    }
+}
+
+// The order of toolpaths begins as a result of the recursive region tree traversal.
+// Within in each band_i tool paths can be rearranged 
+// fn sort_tool_paths(toolpaths: &mut Vec<ToolPath>) {
+// }

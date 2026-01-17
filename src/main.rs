@@ -1,8 +1,8 @@
 use rcarve::im::Lum16Im;
-use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands};
+use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands, debug_print_region_tree};
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
-use rcarve::toolpath::{create_toolpaths_from_region_tree};
+use rcarve::toolpath::{assign_band_i_to_tool_paths, create_toolpaths_from_region_tree};
 use rcarve::sim::sim_toolpaths;
 use rcarve::debug_ui;
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
@@ -222,44 +222,82 @@ fn main() {
     debug_print_cut_bands(&cut_bands);
 
     let region_root = create_region_tree(&cut_bands, &region_infos);
+    debug_print_region_tree(
+        &region_root,
+        &cut_bands,
+        &region_infos,
+        0,
+    );
 
     // TODO un hard-code the tool radius
-    let tool_dia_pix = 20_usize; // Pixels
+    let rough_tool_dia_pix = 20_usize; // Pixels
+    let refine_tool_dia_pix = 10_usize; // Pixels
 
     // Raster step size: int(80% of tool radius), clamped to at least 1.
-    let step_size_pix = (tool_dia_pix.saturating_mul(4) / 5).max(1);
+    let rough_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
+    let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
-    let tool_i = 0; // TODO
+    // TODO: Real tools
+    let tool_i = 0;
 
-    let surface_toolpaths = create_toolpaths_from_region_tree(
+    // TODO use real initial heightmap
+    let bulk_top_thou: Thou = Thou(1000);
+
+    let mut rough_toolpaths = create_toolpaths_from_region_tree(
         &region_root,
         &cut_bands,
         tool_i,
-        tool_dia_pix,
-        step_size_pix,
+        rough_tool_dia_pix,
+        rough_step_size_pix,
+        &ply_im,
+        &region_im,
+        &region_infos,
+        false,
+        true,
+        None,
+        bulk_top_thou,
+    );
+
+    let refine_toolpaths = create_toolpaths_from_region_tree(
+        &region_root,
+        &cut_bands,
+        tool_i,
+        refine_tool_dia_pix,
+        refine_step_size_pix,
         &ply_im,
         &region_im,
         &region_infos,
         true,
-        true,
+        false,
         None,
+        bulk_top_thou,
     );
 
     let mut sim_im = Lum16Im::new(w, h);
-    sim_im.arr.fill(1000_u16); // TODO real initial heightmap
+
+    sim_im.arr.fill(bulk_top_thou.0 as u16); 
 
     let base_im = sim_im.clone();
 
     debug_ui::add_lum16("sim_base", &base_im);
 
+    assign_band_i_to_tool_paths(&cut_bands, &mut rough_toolpaths);
+    // sort_to_tool_paths(&mut rough_toolpaths);
+
+
+
+    // Concat the rough and refine toolpaths.
+    let mut all_toolpaths = rough_toolpaths;
+    all_toolpaths.extend(refine_toolpaths);
+
     sim_toolpaths(
         &mut sim_im,
-        &surface_toolpaths,
+        &all_toolpaths,
         20_usize,
     );
 
     debug_ui::add_lum16("sim_after", &sim_im);
-    debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &surface_toolpaths, 20);
+    debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths, 20);
 
     debug_ui::show();
 }
