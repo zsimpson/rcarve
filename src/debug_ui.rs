@@ -951,22 +951,30 @@ mod imp {
                 return;
             }
 
-            let next = ctx.input(|i| {
-                i.key_pressed(egui::Key::ArrowRight)
-                    || i.key_pressed(egui::Key::PageDown)
-                    || i.key_pressed(egui::Key::N)
+            let next_step = ctx.input(|i| {
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    Some(if i.modifiers.shift { 20 } else { 1 })
+                } else if i.key_pressed(egui::Key::PageDown) || i.key_pressed(egui::Key::N) {
+                    Some(1)
+                } else {
+                    None
+                }
             });
-            if next {
-                self.step_applied(1);
+            if let Some(step) = next_step {
+                self.step_applied(step);
             }
 
-            let prev = ctx.input(|i| {
-                i.key_pressed(egui::Key::ArrowLeft)
-                    || i.key_pressed(egui::Key::PageUp)
-                    || i.key_pressed(egui::Key::P)
+            let prev_step = ctx.input(|i| {
+                if i.key_pressed(egui::Key::ArrowLeft) {
+                    Some(if i.modifiers.shift { -20 } else { -1 })
+                } else if i.key_pressed(egui::Key::PageUp) || i.key_pressed(egui::Key::P) {
+                    Some(-1)
+                } else {
+                    None
+                }
             });
-            if prev {
-                self.step_applied(-1);
+            if let Some(step) = prev_step {
+                self.step_applied(step);
             }
         }
 
@@ -1067,7 +1075,7 @@ mod imp {
                         self.apply_cmd(&line);
                     }
                 });
-                ui.monospace("hotkeys: ArrowLeft/ArrowRight or PgUp/PgDn or p/n");
+                ui.monospace("hotkeys: ArrowLeft/ArrowRight (Shift=±20) or PgUp/PgDn or p/n");
                 if !self.status.is_empty() {
                     ui.monospace(&self.status);
                 }

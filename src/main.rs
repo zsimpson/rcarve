@@ -3,7 +3,7 @@ use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_reg
 use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::toolpath::{create_toolpaths_from_region_tree, sort_tool_paths};
-// use rcarve::sim::sim_toolpaths;
+use rcarve::sim::sim_toolpaths;
 use rcarve::debug_ui;
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
@@ -231,11 +231,11 @@ fn main() {
 
     // TODO un hard-code the tool radius
     let rough_tool_dia_pix = 20_usize; // Pixels
-    // let refine_tool_dia_pix = 10_usize; // Pixels
+    let refine_tool_dia_pix = 10_usize; // Pixels
 
     // Raster step size: int(80% of tool radius), clamped to at least 1.
     let rough_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
-    // let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
+    let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
     // TODO: Real tools
     let tool_i = 0;
@@ -258,20 +258,20 @@ fn main() {
         bulk_top_thou,
     );
 
-    // let refine_toolpaths = create_toolpaths_from_region_tree(
-    //     &region_root,
-    //     &cut_bands,
-    //     tool_i,
-    //     refine_tool_dia_pix,
-    //     refine_step_size_pix,
-    //     &ply_im,
-    //     &region_im,
-    //     &region_infos,
-    //     true,
-    //     false,
-    //     None,
-    //     bulk_top_thou,
-    // );
+    let mut refine_toolpaths = create_toolpaths_from_region_tree(
+        &region_root,
+        &cut_bands,
+        tool_i,
+        refine_tool_dia_pix,
+        refine_step_size_pix,
+        &ply_im,
+        &region_im,
+        &region_infos,
+        true,
+        false,
+        None,
+        bulk_top_thou,
+    );
 
     let mut sim_im = Lum16Im::new(w, h);
 
@@ -283,20 +283,20 @@ fn main() {
 
     // assign_band_i_to_tool_paths(&cut_bands, &mut rough_toolpaths);
     sort_tool_paths(&mut rough_toolpaths, &region_root);
-
+    sort_tool_paths(&mut refine_toolpaths, &region_root);
 
     // Concat the rough and refine toolpaths.
-    // let mut all_toolpaths = rough_toolpaths;
-    // all_toolpaths.extend(refine_toolpaths);
+    let mut all_toolpaths = rough_toolpaths;
+    all_toolpaths.extend(refine_toolpaths);
 
-    // sim_toolpaths(
-    //     &mut sim_im,
-    //     &all_toolpaths,
-    //     20_usize,
-    // );
+    sim_toolpaths(
+        &mut sim_im,
+        &all_toolpaths,
+        20_usize,
+    );
 
-    // debug_ui::add_lum16("sim_after", &sim_im);
-    // debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths, 20);
+    debug_ui::add_lum16("sim_after", &sim_im);
+    debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths, 20);
 
-    // debug_ui::show();
+    debug_ui::show();
 }

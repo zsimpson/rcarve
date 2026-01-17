@@ -16,6 +16,7 @@ pub struct IV3 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPath {
     pub points: Vec<IV3>,
+    pub closed: bool,
     pub tool_dia_pix: usize,
     pub tool_i: usize,
     pub tree_node_id: usize,
@@ -40,6 +41,7 @@ fn create_perimeter_tool_paths(
 
     vec![ToolPath {
         points,
+        closed: true,
         tool_dia_pix,
         tool_i,
         tree_node_id,
@@ -160,6 +162,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                             z: z_thou.0,
                         },
                     ],
+                    closed: false,
                     tool_dia_pix,
                     tool_i,
                     tree_node_id,
@@ -183,6 +186,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                         z: z_thou.0,
                     },
                 ],
+                closed: false,
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
@@ -823,60 +827,28 @@ mod tests {
     }
 }
 
-// Every toolpath must have its cut_band_i assigned based on its Z value
-// so that the sorted can group cut_bands together.
-// pub fn assign_band_i_to_tool_paths(cut_bands: &[CutBand], toolpaths: &mut Vec<ToolPath>) {
-//     use std::collections::{BTreeSet, HashMap};
 
-//     if cut_bands.is_empty() || toolpaths.is_empty() {
-//         return;
-//     }
-
-//     // Toolpaths are numerous, but the number of distinct Z values is small.
-//     // Build a Z -> band_i lookup table once, then assign in a second pass.
-//     let mut unique_z: BTreeSet<i32> = BTreeSet::new();
-//     for tp in toolpaths.iter() {
-//         if let Some(p0) = tp.points.first() {
-//             unique_z.insert(p0.z);
-//         }
-//     }
-
-//     let mut z_to_band_i: HashMap<i32, usize> = HashMap::with_capacity(unique_z.len());
-//     for z in unique_z {
-//         let mut match_i: Option<usize> = None;
-//         for (band_i, band) in cut_bands.iter().enumerate() {
-//             let top = band.top_thou.0;
-//             let bot = band.bot_thou.0;
-//             // Band range semantics: top is exclusive, bottom is inclusive.
-//             if bot <= z && z < top {
-//                 match_i = Some(band_i);
-//                 break;
-//             }
-//         }
-
-//         let band_i = match_i.unwrap_or_else(|| {
-//             panic!(
-//                 "no CutBand contains z_thou={}; bands are [bot_thou, top_thou): {:?}",
-//                 z,
-//                 cut_bands
-//                     .iter()
-//                     .map(|b| (b.bot_thou.0, b.top_thou.0))
-//                     .collect::<Vec<_>>()
-//             )
-//         });
-//         z_to_band_i.insert(z, band_i);
-//     }
-
-//     for tp in toolpaths.iter_mut() {
-//         let Some(p0) = tp.points.first() else {
-//             continue;
-//         };
-//         let band_i = *z_to_band_i.get(&p0.z).unwrap();
-//         tp.cut_band_i = band_i;
-//         debug_assert!(tp.points.iter().all(|p| p.z == p0.z), "toolpath has mixed Z values");
-//     }
-// }
-
-// #[allow(dead_code)]
-pub fn sort_tool_paths(_toolpaths: &[ToolPath], _region_root: &RegionRoot) {
+pub fn sort_tool_paths(toolpaths: &mut Vec<ToolPath>, region_root: &RegionRoot) {
 }
+
+
+/*
+
+Now i want to implem,ent sort_tool_paths().  Here's an example of a _region_root tree:
+
+Root: num_children=3
+  0: Cut: path='0', parent_id=, band_i=0, cut_plane_i=0, ply_guid=HZWKZRTQJV, top_thou=850, region_i=3, region_size=80000, z_thou=850
+  1: Flr: path='1', parent_id=, band_i=0, cut_plane_i=1, ply_guid=floor_0, top_thou=800, floor_regions=[1, 2]
+    2: Cut: path='1.0', parent_id=1, band_i=1, cut_plane_i=0, ply_guid=ZWKKED69NS, top_thou=500, region_i=2, region_size=11900, z_thou=500
+    3: Cut: path='1.1', parent_id=1, band_i=1, cut_plane_i=1, ply_guid=FLOOR_PLY_DESC, top_thou=100, region_i=1, region_size=148100, z_thou=100
+  4: Flr: path='2', parent_id=, band_i=0, cut_plane_i=1, ply_guid=floor_0, top_thou=800, floor_regions=[4]
+    5: Cut: path='2.0', parent_id=4, band_i=1, cut_plane_i=1, ply_guid=FLOOR_PLY_DESC, top_thou=100, region_i=4, region_size=10000, z_thou=100
+
+
+The toolpaths are list of ToolPath and toolPath includes tree_node_id which can be access via the LUT in RegionRoot.get_node_by_id
+
+So the rules of sorting are that in each subtree all of the children are sortable. But after that sort then we need a depth first sort so that the (sorted) children of each child of the subtree are inserted approraitely.
+
+For the siblings of a subtree we need a way to sort the toolpaths which are each a list of verts. There's two cases of verts there's perinters which contain 3+ verts and always form a loop
+
+*/
