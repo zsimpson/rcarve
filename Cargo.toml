@@ -8,7 +8,7 @@ image = { version = "0.25", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clipper2 = "0.5.3"
-eframe = { version = "0.27", optional = true }
+eframe = { version = "0.33", optional = true }
 
 [features]
 # Keep current behavior by default (PNG IO + labeling compiled in).

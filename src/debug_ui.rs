@@ -411,7 +411,7 @@ mod imp {
         eframe::run_native(
             &window_title,
             options,
-            Box::new(move |_cc| Box::new(DebugUiApp::new(&title, items))),
+            Box::new(move |_cc| Ok(Box::new(DebugUiApp::new(&title, items)))),
         )
         .unwrap();
     }
@@ -1107,7 +1107,7 @@ mod imp {
         eframe::run_native(
             title,
             options,
-            Box::new(move |_cc| Box::new(SingleImageApp::new(&title_owned, src.clone()))),
+            Box::new(move |_cc| Ok(Box::new(SingleImageApp::new(&title_owned, src.clone())))),
         )
         .map_err(|e| e.to_string())
     }
@@ -1143,9 +1143,9 @@ mod imp {
             title,
             options,
             Box::new(move |_cc| {
-                Box::new(SingleMovieApp {
+                Ok(Box::new(SingleMovieApp {
                     viewer: ToolpathMovieViewer::new(&title_owned, base.clone(), toolpaths.clone(), tool_dia_pix),
-                })
+                }))
             }),
         )
         .map_err(|e| e.to_string())
