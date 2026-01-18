@@ -13,6 +13,29 @@ pub struct IV3 {
     pub z: i32, // Thou
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CutPixels {
+    pub pixels_changed: u64,
+    pub depth_sum_thou: u64,
+}
+
+impl CutPixels {
+    #[inline]
+    pub fn add_pixel_change(&mut self, old_z: u16, new_z: u16) {
+        debug_assert!(new_z <= old_z);
+        if new_z < old_z {
+            self.pixels_changed += 1;
+            self.depth_sum_thou += (old_z - new_z) as u64;
+        }
+    }
+
+    #[inline]
+    pub fn merge(&mut self, other: CutPixels) {
+        self.pixels_changed += other.pixels_changed;
+        self.depth_sum_thou += other.depth_sum_thou;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolPath {
     pub points: Vec<IV3>,
@@ -20,6 +43,7 @@ pub struct ToolPath {
     pub tool_dia_pix: usize,
     pub tool_i: usize,
     pub tree_node_id: usize,
+    pub cuts: CutPixels,
 }
 
 fn create_perimeter_tool_paths(
@@ -45,9 +69,9 @@ fn create_perimeter_tool_paths(
         tool_dia_pix,
         tool_i,
         tree_node_id,
+        cuts: CutPixels::default(),
     }]
 }
-
 // fn repeat_toolpaths(
 //     base_toolpaths: Vec<ToolPath>,
 //     target_z_thou: Thou,
@@ -166,6 +190,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                     tool_dia_pix,
                     tool_i,
                     tree_node_id,
+                    cuts: CutPixels::default(),
                 });
             }
         }
@@ -190,6 +215,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
+                cuts: CutPixels::default(),
             });
         }
     }
@@ -833,6 +859,7 @@ mod tests {
                 tool_dia_pix: 1,
                 tool_i: 0,
                 tree_node_id: 0,
+                cuts: CutPixels::default(),
             },
             ToolPath {
                 points: vec![IV3 { x: 5, y: 5, z: 0 }, IV3 { x: 6, y: 6, z: 0 }],
@@ -840,6 +867,7 @@ mod tests {
                 tool_dia_pix: 1,
                 tool_i: 0,
                 tree_node_id: 0,
+                cuts: CutPixels::default(),
             },
         ];
 
@@ -856,6 +884,7 @@ mod tests {
             tool_dia_pix: 1,
             tool_i: 0,
             tree_node_id: 0,
+            cuts: CutPixels::default(),
         }];
 
         // Even though z jumps, XY distance is 0 so it should not be broken.
@@ -877,6 +906,7 @@ mod tests {
             tool_dia_pix: 1,
             tool_i: 0,
             tree_node_id: 0,
+            cuts: CutPixels::default(),
         }];
 
         break_long_toolpaths(&mut toolpaths, 10);
@@ -920,7 +950,6 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
         }
 
         let want_closed = tp.closed;
-        let mut any_split = false;
 
         // Normalize closed loops to a ring without a duplicated closing vertex;
         // we will explicitly handle the closing edge.
@@ -929,6 +958,55 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
             if pts.len() >= 2 && pts.first() == pts.last() {
                 pts.pop();
             }
+        }
+
+        // If no segment exceeds the max length, keep the original path (preserving `closed`).
+        // This avoids converting every toolpath into 2-point segments.
+        let mut needs_split = false;
+        if pts.len() >= 2 {
+            for seg in pts.windows(2) {
+                if dist2_xy(&seg[0], &seg[1]) > max_len2 {
+                    needs_split = true;
+                    break;
+                }
+            }
+            if !needs_split && want_closed {
+                let a = *pts.last().unwrap();
+                let b = pts[0];
+                if dist2_xy(&a, &b) > max_len2 {
+                    needs_split = true;
+                }
+            }
+        }
+
+        if !needs_split {
+            if pts.len() >= 2 {
+                if want_closed {
+                    // Re-close explicitly for consumers that expect it.
+                    if pts.first() != pts.last() {
+                        let first = pts[0];
+                        pts.push(first);
+                    }
+                    new_toolpaths.push(ToolPath {
+                        points: pts,
+                        closed: true,
+                        tool_dia_pix: tp.tool_dia_pix,
+                        tool_i: tp.tool_i,
+                        tree_node_id: tp.tree_node_id,
+                        cuts: CutPixels::default(),
+                    });
+                } else {
+                    new_toolpaths.push(ToolPath {
+                        points: pts,
+                        closed: false,
+                        tool_dia_pix: tp.tool_dia_pix,
+                        tool_i: tp.tool_i,
+                        tree_node_id: tp.tree_node_id,
+                        cuts: CutPixels::default(),
+                    });
+                }
+            }
+            continue;
         }
 
         // Helper to emit one or more <=max segments between a and b.
@@ -941,11 +1019,10 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                     tool_dia_pix: tp.tool_dia_pix,
                     tool_i: tp.tool_i,
                     tree_node_id: tp.tree_node_id,
+                    cuts: CutPixels::default(),
                 });
                 return;
             }
-
-            any_split = true;
 
             // Subdivide into N segments so each is <= max_segment_len_pix in XY.
             let dx = (b.x - a.x) as f64;
@@ -967,6 +1044,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
+                        cuts: CutPixels::default(),
                     });
                     prev = next;
                 }
@@ -983,35 +1061,6 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                 let a = *pts.last().unwrap();
                 let b = pts[0];
                 emit_subdivided(a, b);
-            }
-        }
-
-        // If nothing was split and the original path was usable, keep it as-is (preserving `closed`).
-        // This avoids turning every path into many 2-point toolpaths when it already meets constraints.
-        if !any_split {
-            if pts.len() >= 2 {
-                if want_closed {
-                    // Re-close explicitly for consumers that expect it.
-                    let mut closed_pts = pts;
-                    if closed_pts.first() != closed_pts.last() {
-                        closed_pts.push(closed_pts[0]);
-                    }
-                    new_toolpaths.push(ToolPath {
-                        points: closed_pts,
-                        closed: true,
-                        tool_dia_pix: tp.tool_dia_pix,
-                        tool_i: tp.tool_i,
-                        tree_node_id: tp.tree_node_id,
-                    });
-                } else {
-                    new_toolpaths.push(ToolPath {
-                        points: pts,
-                        closed: false,
-                        tool_dia_pix: tp.tool_dia_pix,
-                        tool_i: tp.tool_i,
-                        tree_node_id: tp.tree_node_id,
-                    });
-                }
             }
         }
     }
@@ -1357,6 +1406,7 @@ mod sort_tests {
                 tool_dia_pix: 1,
                 tool_i: 0,
                 tree_node_id: some_node_id,
+                cuts: CutPixels::default(),
             },
             // Closed path intentionally not rotated.
             ToolPath {
@@ -1370,6 +1420,7 @@ mod sort_tests {
                 tool_dia_pix: 1,
                 tool_i: 0,
                 tree_node_id: some_node_id,
+                cuts: CutPixels::default(),
             },
         ];
 

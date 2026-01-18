@@ -188,6 +188,7 @@ mod tests {
                 tool_dia_pix: 5,
                 tool_i: 0,
                 tree_node_id: 0,
+                cuts: Default::default(),
             },
             ToolPath {
                 points: vec![IV3 { x: 12, y: 1, z: 0 }, IV3 { x: 17, y: 1, z: 0 }],
@@ -195,6 +196,7 @@ mod tests {
                 tool_dia_pix: 5,
                 tool_i: 0,
                 tree_node_id: 0,
+                cuts: Default::default(),
             },
             ToolPath {
                 points: vec![IV3 { x: 6, y: 2, z: 0 }, IV3 { x: 10, y: 2, z: 0 }],
@@ -202,6 +204,7 @@ mod tests {
                 tool_dia_pix: 5,
                 tool_i: 0,
                 tree_node_id: 0,
+                cuts: Default::default(),
             },
         ];
 

@@ -351,7 +351,7 @@ fn main() {
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
 
-    sim_toolpaths(&mut sim_im, &all_toolpaths, 20_usize);
+    sim_toolpaths(&mut sim_im, &mut all_toolpaths, 20_usize);
 
     debug_ui::add_lum16("sim_after", &sim_im);
     debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths, 20);

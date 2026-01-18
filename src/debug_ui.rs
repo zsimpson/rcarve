@@ -796,7 +796,7 @@ mod imp {
                 let tool_dia_pix = self.tool_dia_pix;
                 let n = self.applied_count.min(self.movie_toolpaths.len());
                 if n > 0 {
-                    crate::sim::sim_toolpaths(&mut self.sim, &self.movie_toolpaths[..n], tool_dia_pix);
+                    crate::sim::sim_toolpaths(&mut self.sim, &mut self.movie_toolpaths[..n], tool_dia_pix);
                 }
             }
         }
@@ -989,12 +989,24 @@ mod imp {
 
                     let len = self.toolpath_len();
                     match self.active_toolpath_index() {
-                        Some(i) => ui.monospace(format!(
-                            "toolpath={i}/{last} (applied={}/{len})",
-                            self.applied_count,
-                            last = len.saturating_sub(1)
-                        )),
-                        None => ui.monospace(format!("toolpath=none (applied=0/{len})")),
+                        Some(i) => {
+                            ui.monospace(format!(
+                                "toolpath={i}/{last} (applied={}/{len})",
+                                self.applied_count,
+                                last = len.saturating_sub(1)
+                            ));
+
+                            if let Some(tp) = self.movie_toolpaths.get(i) {
+                                ui.separator();
+                                ui.monospace(format!(
+                                    "cut_pixels={} cut_depth_sum_thou={}",
+                                    tp.cuts.pixels_changed, tp.cuts.depth_sum_thou
+                                ));
+                            }
+                        }
+                        None => {
+                            ui.monospace(format!("toolpath=none (applied=0/{len})"));
+                        }
                     };
 
                     ui.separator();

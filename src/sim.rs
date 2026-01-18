@@ -1,5 +1,5 @@
 use crate::im::{Im1Mut, Lum16Im};
-use crate::toolpath::{IV3, ToolPath};
+use crate::toolpath::{CutPixels, IV3, ToolPath};
 
 /// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
 /// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
@@ -27,6 +27,7 @@ pub fn splat_pixel_iz_no_bounds(
     im: &mut Lum16Im,
     z: u16,
     pixel_iz: &[isize],
+    cut: &mut CutPixels,
 ) {
     let stride = im.s;
     let center_i = (cen_y * stride + cen_x) as isize;
@@ -47,6 +48,7 @@ pub fn splat_pixel_iz_no_bounds(
         unsafe {
             let p = arr.get_unchecked_mut(i as usize);
             if z < *p {
+                cut.add_pixel_change(*p, z);
                 *p = z;
             }
         }
@@ -60,6 +62,7 @@ pub fn splat_pixel_iz_bounded(
     z: u16,
     radius_pix: usize,
     pixel_iz: &[isize],
+    cut: &mut CutPixels,
 ) {
     let stride = im.s;
     let w_usize = im.w;
@@ -97,6 +100,7 @@ pub fn splat_pixel_iz_bounded(
         unsafe {
             let p = arr.get_unchecked_mut(i);
             if z < *p {
+                cut.add_pixel_change(*p, z);
                 *p = z;
             }
         }
@@ -110,6 +114,7 @@ pub fn triangle_no_bounds_single_z(
     c: (isize, isize),
     im: &mut Lum16Im,
     z: u16,
+    cut: &mut CutPixels,
 ) {
     #[inline(always)]
     fn edge_setup(x0: i64, y0: i64, x1: i64, y1: i64, y_start: i64) -> (i64, i64) {
@@ -133,6 +138,7 @@ pub fn triangle_no_bounds_single_z(
         x0_fp: i64,
         x1_fp: i64,
         z: u16,
+        cut: &mut CutPixels,
     ) {
         let (mut left_fp, mut right_fp) = (x0_fp, x1_fp);
         if left_fp > right_fp {
@@ -155,6 +161,7 @@ pub fn triangle_no_bounds_single_z(
             unsafe {
                 let p = arr.get_unchecked_mut(i);
                 if z < *p {
+                    cut.add_pixel_change(*p, z);
                     *p = z;
                 }
             }
@@ -178,7 +185,7 @@ pub fn triangle_no_bounds_single_z(
         let y = y0 as usize;
         let min_x = x0.min(x1).min(x2);
         let max_x = x0.max(x1).max(x2);
-        draw_span_no_bounds_single_z(arr, stride, y, min_x << 16, max_x << 16, z);
+        draw_span_no_bounds_single_z(arr, stride, y, min_x << 16, max_x << 16, z, cut);
         return;
     }
 
@@ -206,7 +213,7 @@ pub fn triangle_no_bounds_single_z(
 
         let mut y = y0;
         while y < y1 {
-            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z);
+            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z, cut);
             x_left_fp += left_step_fp;
             x_right_fp += right_step_fp;
             y += 1;
@@ -226,7 +233,7 @@ pub fn triangle_no_bounds_single_z(
 
         let mut y = y1;
         while y <= y2 {
-            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z);
+            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z, cut);
             x_left_fp += left_step_fp;
             x_right_fp += right_step_fp;
             y += 1;
@@ -243,6 +250,7 @@ pub fn triangle_with_bounds_single_z(
     c: (isize, isize),
     im: &mut Lum16Im,
     z: u16,
+    cut: &mut CutPixels,
 ) {
     #[inline(always)]
     fn edge_setup(x0: i64, y0: i64, x1: i64, y1: i64, y_start: i64) -> (i64, i64) {
@@ -267,6 +275,7 @@ pub fn triangle_with_bounds_single_z(
         x0_fp: i64,
         x1_fp: i64,
         z: u16,
+        cut: &mut CutPixels,
     ) {
         let (mut left_fp, mut right_fp) = (x0_fp, x1_fp);
         if left_fp > right_fp {
@@ -301,6 +310,7 @@ pub fn triangle_with_bounds_single_z(
             unsafe {
                 let p = arr.get_unchecked_mut(i);
                 if z < *p {
+                    cut.add_pixel_change(*p, z);
                     *p = z;
                 }
             }
@@ -333,7 +343,7 @@ pub fn triangle_with_bounds_single_z(
         let y = y0 as usize;
         let min_x = x0.min(x1).min(x2);
         let max_x = x0.max(x1).max(x2);
-        draw_span_bounded_single_z(arr, stride, y, w, min_x << 16, max_x << 16, z);
+        draw_span_bounded_single_z(arr, stride, y, w, min_x << 16, max_x << 16, z, cut);
         return;
     }
 
@@ -363,7 +373,7 @@ pub fn triangle_with_bounds_single_z(
 
             let mut y = y_start;
             while y < y_end_excl {
-                draw_span_bounded_single_z(arr, stride, y as usize, w, x_left_fp, x_right_fp, z);
+                draw_span_bounded_single_z(arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut);
                 x_left_fp += left_step_fp;
                 x_right_fp += right_step_fp;
                 y += 1;
@@ -387,7 +397,7 @@ pub fn triangle_with_bounds_single_z(
 
             let mut y = y_start;
             while y <= y_end_incl {
-                draw_span_bounded_single_z(arr, stride, y as usize, w, x_left_fp, x_right_fp, z);
+                draw_span_bounded_single_z(arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut);
                 x_left_fp += left_step_fp;
                 x_right_fp += right_step_fp;
                 y += 1;
@@ -410,9 +420,11 @@ pub fn draw_toolpath_segment_single_depth(
     p1: IV3,
     radius_pix: usize,
     circle_pixel_iz: &[isize],
-) {
+) -> CutPixels {
     debug_assert!(p0.z == p1.z);
     let z_u16 = p0.z.clamp(0, u16::MAX as i32) as u16;
+
+    let mut cut = CutPixels::default();
 
     // let dx = p1.0 as isize - p0.0 as isize;
     // let dy = p1.1 as isize - p0.1 as isize;
@@ -434,7 +446,7 @@ pub fn draw_toolpath_segment_single_depth(
     let py = p0y - p1y;
     let p_mag = (px * px + py * py).sqrt();
     if p_mag == 0.0 {
-        return;
+        return cut;
     }
     let nx = px / p_mag;
     let ny = py / p_mag;
@@ -447,11 +459,11 @@ pub fn draw_toolpath_segment_single_depth(
     let d = ((p1x - qx).round() as isize, (p1y - qy).round() as isize);
 
     if use_bounded {
-        triangle_with_bounds_single_z(a, b, c, im, z_u16);
-        triangle_with_bounds_single_z(a, c, d, im, z_u16);
+        triangle_with_bounds_single_z(a, b, c, im, z_u16, &mut cut);
+        triangle_with_bounds_single_z(a, c, d, im, z_u16, &mut cut);
     } else {
-        triangle_no_bounds_single_z(a, b, c, im, z_u16);
-        triangle_no_bounds_single_z(a, c, d, im, z_u16);
+        triangle_no_bounds_single_z(a, b, c, im, z_u16, &mut cut);
+        triangle_no_bounds_single_z(a, c, d, im, z_u16, &mut cut);
     }
 
     let p0x_usize = p0.x as usize;
@@ -460,21 +472,23 @@ pub fn draw_toolpath_segment_single_depth(
     let p1y_usize = p1.y as usize;
 
     if use_bounded {
-        splat_pixel_iz_bounded(p0x_usize, p0y_usize, im, z_u16, radius_pix, &circle_pixel_iz);
+        splat_pixel_iz_bounded(p0x_usize, p0y_usize, im, z_u16, radius_pix, &circle_pixel_iz, &mut cut);
     } else {
-        splat_pixel_iz_no_bounds(p0x_usize, p0y_usize, im, z_u16, &circle_pixel_iz);
+        splat_pixel_iz_no_bounds(p0x_usize, p0y_usize, im, z_u16, &circle_pixel_iz, &mut cut);
     }
 
     if use_bounded {
-        splat_pixel_iz_bounded(p1x_usize, p1y_usize, im, z_u16, radius_pix, &circle_pixel_iz);
+        splat_pixel_iz_bounded(p1x_usize, p1y_usize, im, z_u16, radius_pix, &circle_pixel_iz, &mut cut);
     } else {
-        splat_pixel_iz_no_bounds(p1x_usize, p1y_usize, im, z_u16, &circle_pixel_iz);
+        splat_pixel_iz_no_bounds(p1x_usize, p1y_usize, im, z_u16, &circle_pixel_iz, &mut cut);
     }
+
+    cut
 }
 
 /// Simulate toolpaths into a `Lum16Im` representing the result.
 /// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
-pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &[ToolPath], tool_dia_pix: usize) {
+pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath], tool_dia_pix: usize) {
     if toolpaths.is_empty() {
         return;
     }
@@ -485,19 +499,17 @@ pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &[ToolPath], tool_dia_pix: usi
     let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
     // let z_thou = Thou(toolpaths[0].points[0].z);
 
-    for toolpath in toolpaths {
+    for toolpath in toolpaths.iter_mut() {
+        toolpath.cuts = CutPixels::default();
+
         // Traverse consecutive point pairs.
         for seg in toolpath.points.windows(2) {
             let p0 = seg[0];
             let p1 = seg[1];
 
-            draw_toolpath_segment_single_depth(
-                im,
-                p0,
-                p1,
-                radius_pix,
-                &circle_pixel_iz,
-            );
+            let seg_cut =
+                draw_toolpath_segment_single_depth(im, p0, p1, radius_pix, &circle_pixel_iz);
+            toolpath.cuts.merge(seg_cut);
         }
     }
 }
