@@ -1,4 +1,6 @@
+#[allow(unused_imports)]
 use crate::debug_ui;
+
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
 use crate::im::label::{LabelInfo, ROI};
@@ -247,7 +249,8 @@ pub fn create_toolpaths_from_region_tree(
     ply_im: &PlyIm,
     region_im: &RegionIm,
     region_infos: &[LabelInfo],
-    gen_perimeters: bool,
+    n_perimeters: usize,
+    perimeter_step_size_pix: usize,
     gen_surfaces: bool,
     mut on_region_masks: Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
     // bulk_z_thou: Thou,
@@ -257,6 +260,7 @@ pub fn create_toolpaths_from_region_tree(
     let mut cut_mask_im = MaskIm::new(w, h);
     let mut above_mask_im = MaskIm::new(w, h);
     let mut dil_above_mask_im = MaskIm::new(w, h);
+    let mut dil_cut_mask_im = MaskIm::new(w, h);
 
     let mut paths: Vec<ToolPath> = Vec::new();
 
@@ -285,6 +289,7 @@ pub fn create_toolpaths_from_region_tree(
         cut_mask_im: &mut MaskIm,
         above_mask_im: &mut MaskIm,
         dil_abv_mask_im: &mut MaskIm,
+        dil_cut_mask_im: &mut MaskIm,
         tool_i: usize,
         tool_dia_pix: usize,
         step_size_pix: usize,
@@ -293,7 +298,8 @@ pub fn create_toolpaths_from_region_tree(
         ply_im: &PlyIm,
         region_infos: &[LabelInfo],
         paths: &mut Vec<ToolPath>,
-        gen_perimeters: bool,
+        n_perimeters: usize,
+        perimeter_step_size_pix: usize,
         gen_surfaces: bool,
         on_region_masks: &mut Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
         // parent_z_thou: Thou,
@@ -302,6 +308,7 @@ pub fn create_toolpaths_from_region_tree(
         cut_mask_im.arr.fill(0);
         above_mask_im.arr.fill(0);
         dil_abv_mask_im.arr.fill(0);
+        dil_cut_mask_im.arr.fill(0);
 
         let mut roi: ROI = ROI {
             l: 0_usize,
@@ -312,7 +319,8 @@ pub fn create_toolpaths_from_region_tree(
         let curr_ply_i_u16: u16;
         let z_thou: Thou;
 
-        // let is_node_floor = matches!(node, RegionNode::Floor { .. });
+        let _is_node_floor = matches!(node, RegionNode::Floor { .. });
+        let mut inner_dilation_pix = tool_dia_pix / 2 + margin_pix;
 
         // Splat in the current node's regions. For floors there is 1+, for cuts there is 1.
         // and find the ROI
@@ -355,32 +363,10 @@ pub fn create_toolpaths_from_region_tree(
             }
         }
 
-        // Apply the pride offset at cut time (not the region-plane time).
-        let cut_z_thou = Thou(z_thou.0.saturating_add(pride_thou.0));
-
-        debug_ui::add_mask_im(
-            &format!("{} cut_mask_im before={}", name, cut_z_thou.0),
-            cut_mask_im,
-        );
-
-        // Dilate the current region into tool-centerable space.
-        let dilation_pix = tool_dia_pix / 2 + margin_pix;
-        im_dilate(cut_mask_im, dil_abv_mask_im, dilation_pix);
-
-        // Swap because I was just using dil_abv_mask_im as a placeholder.
-        // and I really want that into the cut_mask_im.
-        std::mem::swap(cut_mask_im, dil_abv_mask_im);
-
-        debug_ui::add_mask_im(
-            &format!("{} cut_mask_im after={}", name, cut_z_thou.0),
-            cut_mask_im,
-        );
-
-        // Extract the above mask by expanding the ROI and copying any ply pixels that
+        // Build the above_mask_im by expanding the ROI and copying any ply pixels that
         // are above the current region's ply threshold.
+        // Recall that ply_im is sorted form the bottom; higher ply indices have higher values.
         let padded_roi = roi.padded(tool_dia_pix, ply_im.w, ply_im.h);
-
-        // Build the above mask in the padded ROI using the fact that the ply_i is sorted.
         for y in padded_roi.t..padded_roi.b {
             let row = y * ply_im.s;
             for x in padded_roi.l..padded_roi.r {
@@ -409,71 +395,96 @@ pub fn create_toolpaths_from_region_tree(
         //     above_mask_im,
         // );
 
-        // Dilate the above mask and subtract it from the current region mask.
-        // TODO: Optimize by limiting the dilation to the padded ROI.
-        im_dilate(above_mask_im, dil_abv_mask_im, dilation_pix);
-        for y in padded_roi.t..padded_roi.b {
-            let row = y * ply_im.s;
-            for x in padded_roi.l..padded_roi.r {
-                let i = row + x;
-                if dil_abv_mask_im.arr[i] > 0 {
-                    cut_mask_im.arr[i] = 0;
+        // Dilate the above mask 
+        im_dilate(above_mask_im, dil_abv_mask_im, inner_dilation_pix);
+
+        let n_dilation_passes = n_perimeters.max(1);
+        for dilation_i in 0..n_dilation_passes {
+
+            // Apply the pride offset at cut time (not the region-plane time).
+            let cut_z_thou = Thou(z_thou.0.saturating_add(pride_thou.0));
+
+            // debug_ui::add_mask_im(
+            //     &format!("{} cut_mask_im before={}", name, cut_z_thou.0),
+            //     cut_mask_im,
+            // );
+
+            // Dilate the current region into tool-centerable space.
+            im_dilate(cut_mask_im, dil_cut_mask_im, inner_dilation_pix);
+
+            // Swap because I was just using dil_cut_mask_im as a placeholder.
+            // and I really want that into the cut_mask_im.
+            // std::mem::swap(cut_mask_im, dil_cut_mask_im);
+
+            // debug_ui::add_mask_im(
+            //     &format!("{} dil_cut_mask_im before={} dilation_i={}", name, cut_z_thou.0, dilation_i),
+            //     dil_cut_mask_im,
+            // );
+            
+            // Subtract dilation above from cut_mask.
+            // TODO: Optimize by limiting the dilation to the padded ROI.
+            for y in padded_roi.t..padded_roi.b {
+                let row = y * ply_im.s;
+                for x in padded_roi.l..padded_roi.r {
+                    let i = row + x;
+                    if dil_abv_mask_im.arr[i] > 0 {
+                        dil_cut_mask_im.arr[i] = 0;
+                    }
                 }
             }
-        }
 
-        // debug_ui::add_mask_im(
-        //     &format!(
-        //         "cut_with_above_removed={} is_floor={}",
-        //         z_thou.0, is_node_floor
-        //     ),
-        //     above_mask_im,
-        // );
+            // debug_ui::add_mask_im(
+            //     &format!("{} dil_cut_mask_im after={} dilation_i={}", name, cut_z_thou.0, dilation_i),
+            //     dil_cut_mask_im,
+            // );
 
-        let mut node_toolpaths: Vec<ToolPath> = Vec::new();
+            let mut node_toolpaths: Vec<ToolPath> = Vec::new();
 
-        if gen_surfaces {
-            let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
-                cut_mask_im,
-                &padded_roi,
-                tool_i,
-                tool_dia_pix,
-                step_size_pix,
-                cut_z_thou,
-                node.get_id(),
-            );
-            node_toolpaths.extend(toolpaths);
-        }
-
-        if gen_perimeters {
-            // Suzuki–Abe operates on a 1-channel i32 image and mutates it in-place.
-            // TODO: Consider a refactor to generate the masks as i32 directly.
-            // TODO: Move this allocation out of the inner loop.
-            let mut cut_mask_im_i32 = Im::<i32, 1>::new(cut_mask_im.w, cut_mask_im.h);
-            for (dst, &src) in cut_mask_im_i32.arr.iter_mut().zip(cut_mask_im.arr.iter()) {
-                *dst = if src != 0 { 1 } else { 0 };
-            }
-
-            let tolerance = 1.0; // TODO
-            let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
-            for contour in contours {
-                let simp_contour = contour.simplify_by_rdp(tolerance);
-                let toolpaths = create_perimeter_tool_paths(
-                    &simp_contour,
-                    cut_z_thou,
+            if gen_surfaces && dilation_i == 0 {
+                let toolpaths = create_raster_surface_tool_paths_from_cut_mask(
+                    dil_cut_mask_im,
+                    &padded_roi,
                     tool_i,
                     tool_dia_pix,
+                    step_size_pix,
+                    cut_z_thou,
                     node.get_id(),
                 );
                 node_toolpaths.extend(toolpaths);
             }
-        }
 
-        // After generating surface + perimeter toolpaths at the target Z, add repeated passes
-        // at intermediate Z steps down from the parent plane.
-        // let z_step_thou = Thou(50);
-        // let node_toolpaths = repeat_toolpaths(node_toolpaths, z_thou, parent_z_thou, z_step_thou);
-        paths.extend(node_toolpaths);
+            if n_perimeters > 0 {
+                // Suzuki–Abe operates on a 1-channel i32 image and mutates it in-place.
+                // TODO: Consider a refactor to generate the masks as i32 directly.
+                // TODO: Move this allocation out of the inner loop.
+                let mut cut_mask_im_i32 = Im::<i32, 1>::new(cut_mask_im.w, cut_mask_im.h);
+                for (dst, &src) in cut_mask_im_i32.arr.iter_mut().zip(dil_cut_mask_im.arr.iter()) {
+                    *dst = if src != 0 { 1 } else { 0 };
+                }
+
+                let tolerance = 1.0; // TODO
+                let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
+                for contour in contours {
+                    let simp_contour = contour.simplify_by_rdp(tolerance);
+                    let toolpaths = create_perimeter_tool_paths(
+                        &simp_contour,
+                        cut_z_thou,
+                        tool_i,
+                        tool_dia_pix,
+                        node.get_id(),
+                    );
+                    node_toolpaths.extend(toolpaths);
+                }
+
+                inner_dilation_pix += perimeter_step_size_pix;
+            }
+
+            // After generating surface + perimeter toolpaths at the target Z, add repeated passes
+            // at intermediate Z steps down from the parent plane.
+            // let z_step_thou = Thou(50);
+            // let node_toolpaths = repeat_toolpaths(node_toolpaths, z_thou, parent_z_thou, z_step_thou);
+            paths.extend(node_toolpaths);
+        }
 
         // Optional debug/testing hook: after computing masks for a cut leaf.
         if let Some(cb) = on_region_masks.as_mut() {
@@ -496,6 +507,7 @@ pub fn create_toolpaths_from_region_tree(
                         cut_mask_im,
                         above_mask_im,
                         dil_abv_mask_im,
+                        dil_cut_mask_im,
                         tool_i,
                         tool_dia_pix,
                         step_size_pix,
@@ -504,7 +516,8 @@ pub fn create_toolpaths_from_region_tree(
                         ply_im,
                         region_infos,
                         paths,
-                        gen_perimeters,
+                        n_perimeters,
+                        perimeter_step_size_pix,
                         gen_surfaces,
                         on_region_masks,
                     );
@@ -522,6 +535,7 @@ pub fn create_toolpaths_from_region_tree(
             &mut cut_mask_im,
             &mut above_mask_im,
             &mut dil_above_mask_im,
+            &mut dil_cut_mask_im,
             tool_i,
             tool_dia_pix,
             step_size_pix,
@@ -530,7 +544,8 @@ pub fn create_toolpaths_from_region_tree(
             ply_im,
             region_infos,
             &mut paths,
-            gen_perimeters,
+            n_perimeters,
+            perimeter_step_size_pix,
             gen_surfaces,
             &mut on_region_masks,
         );

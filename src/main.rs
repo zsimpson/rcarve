@@ -232,11 +232,13 @@ fn main() {
     let rough_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
     let rough_margin_pix = 5_usize;
     let rough_pride_thou = Thou(50);
+    let rough_perimeter_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
     let refine_tool_dia_pix = 10_usize;
     let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
     let refine_margin_pix = 0_usize;
     let refine_pride_thou = Thou(0);
+    let refine_perimeter_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
     // TODO: Real tools
     let tool_i = 0;
@@ -256,7 +258,8 @@ fn main() {
         &ply_im,
         &region_im,
         &region_infos,
-        false,
+        0,
+        rough_perimeter_step_size_pix,
         true,
         None,
     );
@@ -273,7 +276,8 @@ fn main() {
         &ply_im,
         &region_im,
         &region_infos,
-        true,
+        3,
+        refine_perimeter_step_size_pix,
         false,
         None,
     );
