@@ -231,7 +231,7 @@ fn main() {
     let rough_tool_dia_pix = 20_usize;
     let rough_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
     let rough_margin_pix = 5_usize;
-    let rough_pride_thou = Thou(50);
+    let rough_pride_thou = Thou(0);
     let rough_perimeter_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
     let refine_tool_dia_pix = 10_usize;

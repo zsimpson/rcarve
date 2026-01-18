@@ -320,7 +320,11 @@ pub fn create_toolpaths_from_region_tree(
         let z_thou: Thou;
 
         let _is_node_floor = matches!(node, RegionNode::Floor { .. });
-        let mut inner_dilation_pix = tool_dia_pix / 2 + margin_pix;
+
+        // NOTE: `im_dilate` takes a *diameter* in pixels, but for toolpath planning we usually
+        // think in terms of an expansion *radius*.
+        let tool_rad_pix = tool_dia_pix / 2;
+        let base_rad_pix = tool_rad_pix + margin_pix;
 
         // Splat in the current node's regions. For floors there is 1+, for cuts there is 1.
         // and find the ROI
@@ -366,7 +370,13 @@ pub fn create_toolpaths_from_region_tree(
         // Build the above_mask_im by expanding the ROI and copying any ply pixels that
         // are above the current region's ply threshold.
         // Recall that ply_im is sorted form the bottom; higher ply indices have higher values.
-        let padded_roi = roi.padded(tool_dia_pix, ply_im.w, ply_im.h);
+        //
+        // Expand by the maximum radius we will use across perimeter passes so the subtraction is
+        // correct for all offsets.
+        let n_dilation_passes = n_perimeters.max(1);
+        let max_rad_pix = base_rad_pix
+            .saturating_add(perimeter_step_size_pix.saturating_mul(n_dilation_passes.saturating_sub(1)));
+        let padded_roi = roi.padded(max_rad_pix, ply_im.w, ply_im.h);
         for y in padded_roi.t..padded_roi.b {
             let row = y * ply_im.s;
             for x in padded_roi.l..padded_roi.r {
@@ -395,11 +405,20 @@ pub fn create_toolpaths_from_region_tree(
         //     above_mask_im,
         // );
 
-        // Dilate the above mask 
-        im_dilate(above_mask_im, dil_abv_mask_im, inner_dilation_pix);
-
-        let n_dilation_passes = n_perimeters.max(1);
+        // Each perimeter pass uses a larger dilation radius.
         for dilation_i in 0..n_dilation_passes {
+            let rad_pix = base_rad_pix.saturating_add(perimeter_step_size_pix.saturating_mul(dilation_i));
+
+            // Convert radius -> diameter for `im_dilate` (which uses `radius = dia/2`).
+            // `2*rad+1` ensures each +1 in radius always changes the dilation.
+            let max_dia_pix = ply_im.w.min(ply_im.h).max(1);
+            let dia_pix = rad_pix
+                .saturating_mul(2)
+                .saturating_add(1)
+                .min(max_dia_pix);
+
+            // Dilate the above mask to the same radius as the current cut mask.
+            im_dilate(above_mask_im, dil_abv_mask_im, dia_pix);
 
             // Apply the pride offset at cut time (not the region-plane time).
             let cut_z_thou = Thou(z_thou.0.saturating_add(pride_thou.0));
@@ -410,7 +429,7 @@ pub fn create_toolpaths_from_region_tree(
             // );
 
             // Dilate the current region into tool-centerable space.
-            im_dilate(cut_mask_im, dil_cut_mask_im, inner_dilation_pix);
+            im_dilate(cut_mask_im, dil_cut_mask_im, dia_pix);
 
             // Swap because I was just using dil_cut_mask_im as a placeholder.
             // and I really want that into the cut_mask_im.
@@ -476,7 +495,6 @@ pub fn create_toolpaths_from_region_tree(
                     node_toolpaths.extend(toolpaths);
                 }
 
-                inner_dilation_pix += perimeter_step_size_pix;
             }
 
             // After generating surface + perimeter toolpaths at the target Z, add repeated passes
@@ -617,15 +635,19 @@ mod tests {
         let tool_dia_pix = 2_usize;
         let tool_step_pix = 1_usize;
         let paths = create_toolpaths_from_region_tree(
+            "test",
             &region_root,
             &cut_bands,
             0,
             tool_dia_pix,
             tool_step_pix,
+            0,
+            Thou(0),
             &ply_im,
             &region_im,
             &region_infos,
-            false,
+            0,
+            1,
             true,
             None,
         );
@@ -799,15 +821,19 @@ mod tests {
 
         // Primary call under test (should not panic).
         let _paths = create_toolpaths_from_region_tree(
+            "test",
             &region_root,
             &cut_bands,
             0,
             tool_dia_pix,
             tool_step_pix,
+            0,
+            Thou(0),
             &ply_im,
             &region_im,
             &region_infos,
-            false,
+            0,
+            1,
             true,
             Some(&mut on_region_masks),
         );
@@ -1378,15 +1404,19 @@ mod sort_tests {
         let region_root = create_region_tree(&cut_bands, &region_infos);
 
         let mut toolpaths = create_toolpaths_from_region_tree(
+            "test",
             &region_root,
             &cut_bands,
             0,
             2,
             1,
+            0,
+            Thou(0),
             &ply_im,
             &region_im,
             &region_infos,
-            false,
+            0,
+            1,
             true,
             None,
         );
