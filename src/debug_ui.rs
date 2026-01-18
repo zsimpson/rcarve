@@ -478,7 +478,11 @@ mod imp {
                 });
             });
 
-            egui::SidePanel::left("left").resizable(true).show(ctx, |ui| {
+            // Make the Debug Items column wider by default (2x the previous implicit default).
+            egui::SidePanel::left("left")
+                .resizable(true)
+                .default_width(400.0)
+                .show(ctx, |ui| {
                 ui.heading("Debug Items");
                 ui.separator();
 
@@ -498,7 +502,7 @@ mod imp {
                             }
                         }
                     });
-            });
+                });
 
             egui::CentralPanel::default().show(ctx, |ui| {
                 let Some(item) = self.selected_item_mut() else {
@@ -793,10 +797,9 @@ mod imp {
             self.sim.arr.copy_from_slice(&self.base.arr);
 
             if self.applied_count > 0 {
-                let tool_dia_pix = self.tool_dia_pix;
                 let n = self.applied_count.min(self.movie_toolpaths.len());
                 if n > 0 {
-                    crate::sim::sim_toolpaths(&mut self.sim, &mut self.movie_toolpaths[..n], tool_dia_pix);
+                    crate::sim::sim_toolpaths(&mut self.sim, &mut self.movie_toolpaths[..n]);
                 }
             }
         }

@@ -227,13 +227,16 @@ fn main() {
     let region_root = create_region_tree(&cut_bands, &region_infos);
     debug_print_region_tree(&region_root, &cut_bands, &region_infos, 0);
 
-    // TODO un hard-code the tool radius
-    let rough_tool_dia_pix = 20_usize; // Pixels
-    let refine_tool_dia_pix = 10_usize; // Pixels
-
-    // Raster step size: int(80% of tool radius), clamped to at least 1.
+    // TODO un hard-code these and use real tool settings
+    let rough_tool_dia_pix = 20_usize;
     let rough_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
+    let rough_margin_pix = 5_usize;
+    let rough_pride_thou = Thou(50);
+
+    let refine_tool_dia_pix = 10_usize;
     let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
+    let refine_margin_pix = 0_usize;
+    let refine_pride_thou = Thou(0);
 
     // TODO: Real tools
     let tool_i = 0;
@@ -242,73 +245,42 @@ fn main() {
     let bulk_top_thou: Thou = Thou(1000);
 
     let mut rough_toolpaths = create_toolpaths_from_region_tree(
+        "rough",
         &region_root,
         &cut_bands,
         tool_i,
         rough_tool_dia_pix,
         rough_step_size_pix,
+        rough_margin_pix,
+        rough_pride_thou,
         &ply_im,
         &region_im,
         &region_infos,
         false,
         true,
         None,
-        // bulk_top_thou,
     );
 
     let mut refine_toolpaths = create_toolpaths_from_region_tree(
+        "refine",
         &region_root,
         &cut_bands,
         tool_i,
         refine_tool_dia_pix,
         refine_step_size_pix,
+        refine_margin_pix,
+        refine_pride_thou,
         &ply_im,
         &region_im,
         &region_infos,
         true,
         false,
         None,
-        // bulk_top_thou,
     );
 
     let mut sim_im = Lum16Im::new(w, h);
-
     sim_im.arr.fill(bulk_top_thou.0 as u16);
-
-    let base_im = sim_im.clone();
-
-    // debug_ui::add_lum16("sim_base", &base_im);
-
-    // assign_band_i_to_tool_paths(&cut_bands, &mut rough_toolpaths);
-
-    // #[cfg(debug_assertions)]
-    // {
-    //     fn dump_toolpaths(label: &str, tps: &[rcarve::toolpath::ToolPath], root: &rcarve::region_tree::RegionRoot, n: usize) {
-    //         println!("--- {label} (showing first {n}) ---");
-    //         for (i, tp) in tps.iter().take(n).enumerate() {
-    //             let start = tp.points.first().copied().unwrap_or(rcarve::toolpath::IV3 { x: 0, y: 0, z: 0 });
-    //             let end = tp.points.last().copied().unwrap_or(start);
-    //             let node_str = root
-    //                 .get_node_by_id(tp.tree_node_id)
-    //                 .map(|n| format!("{n}"))
-    //                 .unwrap_or_else(|| "<missing node>".to_string());
-    //             println!(
-    //                 "[{i:04}] node_id={} closed={} z={} start=({}, {}) end=({}, {}) :: {}",
-    //                 tp.tree_node_id,
-    //                 tp.closed,
-    //                 start.z,
-    //                 start.x,
-    //                 start.y,
-    //                 end.x,
-    //                 end.y,
-    //                 node_str
-    //             );
-    //         }
-    //     }
-
-    //     dump_toolpaths("rough toolpaths BEFORE sort", &rough_toolpaths, &region_root, 20);
-    //     dump_toolpaths("refine toolpaths BEFORE sort", &refine_toolpaths, &region_root, 20);
-    // }
+    let before_sim_im = sim_im.clone();
 
     sort_tool_paths(&mut rough_toolpaths, &region_root);
 
@@ -318,43 +290,14 @@ fn main() {
     sort_tool_paths(&mut refine_toolpaths, &region_root);
     break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
 
-    // #[cfg(debug_assertions)]
-    // {
-    //     fn dump_toolpaths(label: &str, tps: &[rcarve::toolpath::ToolPath], root: &rcarve::region_tree::RegionRoot, n: usize) {
-    //         println!("--- {label} (showing first {n}) ---");
-    //         for (i, tp) in tps.iter().take(n).enumerate() {
-    //             let start = tp.points.first().copied().unwrap_or(rcarve::toolpath::IV3 { x: 0, y: 0, z: 0 });
-    //             let end = tp.points.last().copied().unwrap_or(start);
-    //             let node_str = root
-    //                 .get_node_by_id(tp.tree_node_id)
-    //                 .map(|n| format!("{n}"))
-    //                 .unwrap_or_else(|| "<missing node>".to_string());
-    //             println!(
-    //                 "[{i:04}] node_id={} closed={} z={} start=({}, {}) end=({}, {}) :: {}",
-    //                 tp.tree_node_id,
-    //                 tp.closed,
-    //                 start.z,
-    //                 start.x,
-    //                 start.y,
-    //                 end.x,
-    //                 end.y,
-    //                 node_str
-    //             );
-    //         }
-    //     }
-
-    //     dump_toolpaths("rough toolpaths AFTER sort", &rough_toolpaths, &region_root, 20);
-    //     dump_toolpaths("refine toolpaths AFTER sort", &refine_toolpaths, &region_root, 20);
-    // }
-
-    // Concat the rough and refine toolpaths.
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
 
-    sim_toolpaths(&mut sim_im, &mut all_toolpaths, 20_usize);
+    // The toolspaths need to be mutable because the the sim function
+    // annotates them with cut information.
+    sim_toolpaths(&mut sim_im, &mut all_toolpaths);
 
     debug_ui::add_lum16("sim_after", &sim_im);
-    debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths, 20);
-
+    debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths, 20);
     debug_ui::show();
 }

@@ -1,4 +1,4 @@
-// use crate::debug_ui;
+use crate::debug_ui;
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
 use crate::im::label::{LabelInfo, ROI};
@@ -236,11 +236,14 @@ fn create_raster_surface_tool_paths_from_cut_mask(
 /// and build a RLE representation of the mask along the standard scanlines.
 
 pub fn create_toolpaths_from_region_tree(
+    name: &str,
     region_root: &RegionRoot,
     cut_bands: &[CutBand],
     tool_i: usize,
     tool_dia_pix: usize,
     step_size_pix: usize,
+    margin_pix: usize,
+    pride_thou: Thou,
     ply_im: &PlyIm,
     region_im: &RegionIm,
     region_infos: &[LabelInfo],
@@ -276,6 +279,7 @@ pub fn create_toolpaths_from_region_tree(
 
     // Recurse through the region tree
     fn recurse_region_tree(
+        name: &str,
         node: &RegionNode,
         cut_bands: &[CutBand],
         cut_mask_im: &mut MaskIm,
@@ -284,6 +288,8 @@ pub fn create_toolpaths_from_region_tree(
         tool_i: usize,
         tool_dia_pix: usize,
         step_size_pix: usize,
+        margin_pix: usize,
+        pride_thou: Thou,
         ply_im: &PlyIm,
         region_infos: &[LabelInfo],
         paths: &mut Vec<ToolPath>,
@@ -349,14 +355,26 @@ pub fn create_toolpaths_from_region_tree(
             }
         }
 
-        // debug_ui::add_mask_im(
-        //     &format!("cut_mask_im={} is_floor={}", z_thou.0, is_node_floor),
-        //     cut_mask_im,
-        // );
+        // Apply the pride offset at cut time (not the region-plane time).
+        let cut_z_thou = Thou(z_thou.0.saturating_add(pride_thou.0));
+
+        debug_ui::add_mask_im(
+            &format!("{} cut_mask_im before={}", name, cut_z_thou.0),
+            cut_mask_im,
+        );
 
         // Dilate the current region into tool-centerable space.
-        im_dilate(cut_mask_im, dil_abv_mask_im, tool_dia_pix);
-        // std::mem::swap(cut_mask_im, dil_abv_mask_im);
+        let dilation_pix = tool_dia_pix / 2 + margin_pix;
+        im_dilate(cut_mask_im, dil_abv_mask_im, dilation_pix);
+
+        // Swap because I was just using dil_abv_mask_im as a placeholder.
+        // and I really want that into the cut_mask_im.
+        std::mem::swap(cut_mask_im, dil_abv_mask_im);
+
+        debug_ui::add_mask_im(
+            &format!("{} cut_mask_im after={}", name, cut_z_thou.0),
+            cut_mask_im,
+        );
 
         // Extract the above mask by expanding the ROI and copying any ply pixels that
         // are above the current region's ply threshold.
@@ -393,7 +411,7 @@ pub fn create_toolpaths_from_region_tree(
 
         // Dilate the above mask and subtract it from the current region mask.
         // TODO: Optimize by limiting the dilation to the padded ROI.
-        im_dilate(above_mask_im, dil_abv_mask_im, tool_dia_pix);
+        im_dilate(above_mask_im, dil_abv_mask_im, dilation_pix);
         for y in padded_roi.t..padded_roi.b {
             let row = y * ply_im.s;
             for x in padded_roi.l..padded_roi.r {
@@ -421,7 +439,7 @@ pub fn create_toolpaths_from_region_tree(
                 tool_i,
                 tool_dia_pix,
                 step_size_pix,
-                z_thou,
+                cut_z_thou,
                 node.get_id(),
             );
             node_toolpaths.extend(toolpaths);
@@ -440,8 +458,13 @@ pub fn create_toolpaths_from_region_tree(
             let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
             for contour in contours {
                 let simp_contour = contour.simplify_by_rdp(tolerance);
-                let toolpaths =
-                    create_perimeter_tool_paths(&simp_contour, z_thou, tool_i, tool_dia_pix, node.get_id());
+                let toolpaths = create_perimeter_tool_paths(
+                    &simp_contour,
+                    cut_z_thou,
+                    tool_i,
+                    tool_dia_pix,
+                    node.get_id(),
+                );
                 node_toolpaths.extend(toolpaths);
             }
         }
@@ -467,6 +490,7 @@ pub fn create_toolpaths_from_region_tree(
             RegionNode::Floor { children, .. } => {
                 for child in children {
                     recurse_region_tree(
+                        name,
                         child,
                         cut_bands,
                         cut_mask_im,
@@ -475,13 +499,14 @@ pub fn create_toolpaths_from_region_tree(
                         tool_i,
                         tool_dia_pix,
                         step_size_pix,
+                        margin_pix,
+                        pride_thou,
                         ply_im,
                         region_infos,
                         paths,
                         gen_perimeters,
                         gen_surfaces,
                         on_region_masks,
-                        // z_thou,
                     );
                 }
             }
@@ -491,6 +516,7 @@ pub fn create_toolpaths_from_region_tree(
 
     for child in region_root.children() {
         recurse_region_tree(
+            name,
             child,
             cut_bands,
             &mut cut_mask_im,
@@ -499,13 +525,14 @@ pub fn create_toolpaths_from_region_tree(
             tool_i,
             tool_dia_pix,
             step_size_pix,
+            margin_pix,
+            pride_thou,
             ply_im,
             region_infos,
             &mut paths,
             gen_perimeters,
             gen_surfaces,
             &mut on_region_masks,
-            // bulk_z_thou,
         );
     }
 
@@ -879,7 +906,14 @@ mod tests {
     #[test]
     fn break_long_toolpaths_ignores_z_only_jumps() {
         let mut toolpaths = vec![ToolPath {
-            points: vec![IV3 { x: 0, y: 0, z: 0 }, IV3 { x: 0, y: 0, z: 10_000 }],
+            points: vec![
+                IV3 { x: 0, y: 0, z: 0 },
+                IV3 {
+                    x: 0,
+                    y: 0,
+                    z: 10_000,
+                },
+            ],
             closed: false,
             tool_dia_pix: 1,
             tool_i: 0,
@@ -1068,9 +1102,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
     *toolpaths = new_toolpaths;
 }
 
-
 pub fn sort_tool_paths(toolpaths: &mut Vec<ToolPath>, region_root: &RegionRoot) {
-
     fn band_i(node: &RegionNode) -> usize {
         match node {
             RegionNode::Floor { band_i, .. } => *band_i,
@@ -1145,7 +1177,11 @@ pub fn sort_tool_paths(toolpaths: &mut Vec<ToolPath>, region_root: &RegionRoot) 
             tp.points.pop();
             if tp.points.len() <= 1 {
                 // Restore the closure representation.
-                let first = tp.points.first().copied().unwrap_or(IV3 { x: 0, y: 0, z: 0 });
+                let first = tp
+                    .points
+                    .first()
+                    .copied()
+                    .unwrap_or(IV3 { x: 0, y: 0, z: 0 });
                 tp.points.push(first);
                 return;
             }
@@ -1356,7 +1392,10 @@ mod sort_tests {
 
         let mut last_rank = 0usize;
         for (i, tp) in toolpaths.iter().enumerate() {
-            let r = id_to_rank.get(tp.tree_node_id).copied().unwrap_or(usize::MAX);
+            let r = id_to_rank
+                .get(tp.tree_node_id)
+                .copied()
+                .unwrap_or(usize::MAX);
             if i == 0 {
                 last_rank = r;
             } else {
@@ -1438,7 +1477,6 @@ mod sort_tests {
     }
 }
 
-
 /*
 
 Now i want to implement sort_tool_paths().  Here's an example of a _region_root tree:
@@ -1454,7 +1492,7 @@ Root: num_children=3
 
 The toolpaths are list of ToolPath and toolPath includes tree_node_id which can be access via the LUT in RegionRoot.get_node_by_id
 
-So the rules of sorting are that 
+So the rules of sorting are that
     Toolpaths come in two varieties: closed and open.
         Closed toolpaths are perimeters which are loops and can be started anywhere.
         Open toolpaths are should always start and one end or the other.
@@ -1463,7 +1501,7 @@ So the rules of sorting are that
     Sibling nodes must all be in the same band_i (assert that)
 
     Sibling nodes can be sorted in any order amoung themselves.
-        
+
     A floor node "reveals" chilren below it and those children nodes are added before sibling nodes.
 
     All of a node and its children must be cut together before moving to the next sibling node.

@@ -1,5 +1,6 @@
 use crate::im::{Im1Mut, Lum16Im};
 use crate::toolpath::{CutPixels, IV3, ToolPath};
+use std::collections::{BTreeSet, HashMap};
 
 /// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
 /// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
@@ -373,7 +374,9 @@ pub fn triangle_with_bounds_single_z(
 
             let mut y = y_start;
             while y < y_end_excl {
-                draw_span_bounded_single_z(arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut);
+                draw_span_bounded_single_z(
+                    arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut,
+                );
                 x_left_fp += left_step_fp;
                 x_right_fp += right_step_fp;
                 y += 1;
@@ -397,7 +400,9 @@ pub fn triangle_with_bounds_single_z(
 
             let mut y = y_start;
             while y <= y_end_incl {
-                draw_span_bounded_single_z(arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut);
+                draw_span_bounded_single_z(
+                    arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut,
+                );
                 x_left_fp += left_step_fp;
                 x_right_fp += right_step_fp;
                 y += 1;
@@ -472,13 +477,29 @@ pub fn draw_toolpath_segment_single_depth(
     let p1y_usize = p1.y as usize;
 
     if use_bounded {
-        splat_pixel_iz_bounded(p0x_usize, p0y_usize, im, z_u16, radius_pix, &circle_pixel_iz, &mut cut);
+        splat_pixel_iz_bounded(
+            p0x_usize,
+            p0y_usize,
+            im,
+            z_u16,
+            radius_pix,
+            &circle_pixel_iz,
+            &mut cut,
+        );
     } else {
         splat_pixel_iz_no_bounds(p0x_usize, p0y_usize, im, z_u16, &circle_pixel_iz, &mut cut);
     }
 
     if use_bounded {
-        splat_pixel_iz_bounded(p1x_usize, p1y_usize, im, z_u16, radius_pix, &circle_pixel_iz, &mut cut);
+        splat_pixel_iz_bounded(
+            p1x_usize,
+            p1y_usize,
+            im,
+            z_u16,
+            radius_pix,
+            &circle_pixel_iz,
+            &mut cut,
+        );
     } else {
         splat_pixel_iz_no_bounds(p1x_usize, p1y_usize, im, z_u16, &circle_pixel_iz, &mut cut);
     }
@@ -488,19 +509,34 @@ pub fn draw_toolpath_segment_single_depth(
 
 /// Simulate toolpaths into a `Lum16Im` representing the result.
 /// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
-pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath], tool_dia_pix: usize) {
+/// The toolpaths are mutable because the cut annotations will be recorded into them.
+pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath]) {
     if toolpaths.is_empty() {
         return;
     }
 
-    // TODO: Multi tool. For now assume the first is the only.
+    // Pre-pass: collect unique tool diameters used by these toolpaths.
+    let mut dia_set: BTreeSet<usize> = BTreeSet::new();
+    for toolpath in toolpaths.iter() {
+        dia_set.insert(toolpath.tool_dia_pix);
+    }
 
-    let radius_pix = tool_dia_pix / 2; //toolpaths[0].tool_dia_pix / 2;
-    let circle_pixel_iz = circle_pixel_iz(radius_pix, im.s);
-    // let z_thou = Thou(toolpaths[0].points[0].z);
+    // Build a circle LUT per radius (depends on stride), then reuse while simulating.
+    let mut circle_lut_by_radius: HashMap<usize, Vec<isize>> = HashMap::new();
+    for tool_dia_pix in dia_set {
+        let radius_pix = tool_dia_pix / 2;
+        circle_lut_by_radius
+            .entry(radius_pix)
+            .or_insert_with(|| circle_pixel_iz(radius_pix, im.s));
+    }
 
     for toolpath in toolpaths.iter_mut() {
         toolpath.cuts = CutPixels::default();
+
+        let tool_radius_pix = toolpath.tool_dia_pix / 2;
+        let circle_pixel_iz = circle_lut_by_radius
+            .get(&tool_radius_pix)
+            .expect("circle LUT missing for tool radius");
 
         // Traverse consecutive point pairs.
         for seg in toolpath.points.windows(2) {
@@ -508,7 +544,7 @@ pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath], tool_dia_pix:
             let p1 = seg[1];
 
             let seg_cut =
-                draw_toolpath_segment_single_depth(im, p0, p1, radius_pix, &circle_pixel_iz);
+                draw_toolpath_segment_single_depth(im, p0, p1, tool_radius_pix, circle_pixel_iz);
             toolpath.cuts.merge(seg_cut);
         }
     }
