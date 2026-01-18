@@ -1,10 +1,13 @@
-use rcarve::im::Lum16Im;
-use rcarve::region_tree::{PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands, debug_print_region_tree};
-use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
-use rcarve::im::label::{LabelInfo, label_im};
-use rcarve::toolpath::{create_toolpaths_from_region_tree, sort_tool_paths};
-use rcarve::sim::sim_toolpaths;
 use rcarve::debug_ui;
+use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
+use rcarve::im::Lum16Im;
+use rcarve::im::label::{LabelInfo, label_im};
+use rcarve::region_tree::{
+    PlyIm, RegionI, RegionIm, create_cut_bands, create_region_tree, debug_print_cut_bands,
+    debug_print_region_tree,
+};
+use rcarve::sim::sim_toolpaths;
+use rcarve::toolpath::{break_long_toolpaths, create_toolpaths_from_region_tree, sort_tool_paths};
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
 #[allow(dead_code)]
@@ -191,7 +194,7 @@ fn main() {
     let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) = label_im(&ply_im);
     let region_im: RegionIm = region_im_raw.retag::<RegionI>();
 
-    debug_ui::add_region_im("region_im", &region_im);
+    // debug_ui::add_region_im("region_im", &region_im);
 
     // Print ROI/pixel/neighbors info (skip index 0).
     for (label_id, info) in region_infos.iter().enumerate().skip(1) {
@@ -222,12 +225,7 @@ fn main() {
     debug_print_cut_bands(&cut_bands);
 
     let region_root = create_region_tree(&cut_bands, &region_infos);
-    debug_print_region_tree(
-        &region_root,
-        &cut_bands,
-        &region_infos,
-        0,
-    );
+    debug_print_region_tree(&region_root, &cut_bands, &region_infos, 0);
 
     // TODO un hard-code the tool radius
     let rough_tool_dia_pix = 20_usize; // Pixels
@@ -255,7 +253,7 @@ fn main() {
         false,
         true,
         None,
-        bulk_top_thou,
+        // bulk_top_thou,
     );
 
     let mut refine_toolpaths = create_toolpaths_from_region_tree(
@@ -270,30 +268,90 @@ fn main() {
         true,
         false,
         None,
-        bulk_top_thou,
+        // bulk_top_thou,
     );
 
     let mut sim_im = Lum16Im::new(w, h);
 
-    sim_im.arr.fill(bulk_top_thou.0 as u16); 
+    sim_im.arr.fill(bulk_top_thou.0 as u16);
 
     let base_im = sim_im.clone();
 
-    debug_ui::add_lum16("sim_base", &base_im);
+    // debug_ui::add_lum16("sim_base", &base_im);
 
     // assign_band_i_to_tool_paths(&cut_bands, &mut rough_toolpaths);
+
+    // #[cfg(debug_assertions)]
+    // {
+    //     fn dump_toolpaths(label: &str, tps: &[rcarve::toolpath::ToolPath], root: &rcarve::region_tree::RegionRoot, n: usize) {
+    //         println!("--- {label} (showing first {n}) ---");
+    //         for (i, tp) in tps.iter().take(n).enumerate() {
+    //             let start = tp.points.first().copied().unwrap_or(rcarve::toolpath::IV3 { x: 0, y: 0, z: 0 });
+    //             let end = tp.points.last().copied().unwrap_or(start);
+    //             let node_str = root
+    //                 .get_node_by_id(tp.tree_node_id)
+    //                 .map(|n| format!("{n}"))
+    //                 .unwrap_or_else(|| "<missing node>".to_string());
+    //             println!(
+    //                 "[{i:04}] node_id={} closed={} z={} start=({}, {}) end=({}, {}) :: {}",
+    //                 tp.tree_node_id,
+    //                 tp.closed,
+    //                 start.z,
+    //                 start.x,
+    //                 start.y,
+    //                 end.x,
+    //                 end.y,
+    //                 node_str
+    //             );
+    //         }
+    //     }
+
+    //     dump_toolpaths("rough toolpaths BEFORE sort", &rough_toolpaths, &region_root, 20);
+    //     dump_toolpaths("refine toolpaths BEFORE sort", &refine_toolpaths, &region_root, 20);
+    // }
+
     sort_tool_paths(&mut rough_toolpaths, &region_root);
+
+    let max_segment_len_pix = 100_usize;
+    break_long_toolpaths(&mut rough_toolpaths, max_segment_len_pix);
+
     sort_tool_paths(&mut refine_toolpaths, &region_root);
+    break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
+
+    // #[cfg(debug_assertions)]
+    // {
+    //     fn dump_toolpaths(label: &str, tps: &[rcarve::toolpath::ToolPath], root: &rcarve::region_tree::RegionRoot, n: usize) {
+    //         println!("--- {label} (showing first {n}) ---");
+    //         for (i, tp) in tps.iter().take(n).enumerate() {
+    //             let start = tp.points.first().copied().unwrap_or(rcarve::toolpath::IV3 { x: 0, y: 0, z: 0 });
+    //             let end = tp.points.last().copied().unwrap_or(start);
+    //             let node_str = root
+    //                 .get_node_by_id(tp.tree_node_id)
+    //                 .map(|n| format!("{n}"))
+    //                 .unwrap_or_else(|| "<missing node>".to_string());
+    //             println!(
+    //                 "[{i:04}] node_id={} closed={} z={} start=({}, {}) end=({}, {}) :: {}",
+    //                 tp.tree_node_id,
+    //                 tp.closed,
+    //                 start.z,
+    //                 start.x,
+    //                 start.y,
+    //                 end.x,
+    //                 end.y,
+    //                 node_str
+    //             );
+    //         }
+    //     }
+
+    //     dump_toolpaths("rough toolpaths AFTER sort", &rough_toolpaths, &region_root, 20);
+    //     dump_toolpaths("refine toolpaths AFTER sort", &refine_toolpaths, &region_root, 20);
+    // }
 
     // Concat the rough and refine toolpaths.
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
 
-    sim_toolpaths(
-        &mut sim_im,
-        &all_toolpaths,
-        20_usize,
-    );
+    sim_toolpaths(&mut sim_im, &all_toolpaths, 20_usize);
 
     debug_ui::add_lum16("sim_after", &sim_im);
     debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths, 20);
