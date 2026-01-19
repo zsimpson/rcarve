@@ -323,6 +323,23 @@ pub fn create_toolpaths_from_region_tree(
         let curr_ply_i_u16: u16;
         let z_thou: Thou;
 
+        fn ply_threshold_at_depth(cut_bands: &[CutBand], depth_thou: Thou) -> u16 {
+            // We want the largest ply index whose top_thou is <= the depth we're cutting to.
+            // Pixels with a higher ply index are "above" this depth and must be excluded.
+            let mut best: u16 = 0;
+            for band in cut_bands {
+                for cp in &band.cut_planes {
+                    if cp.is_floor {
+                        continue;
+                    }
+                    if cp.top_thou.0 <= depth_thou.0 {
+                        best = best.max(cp.ply_i.0);
+                    }
+                }
+            }
+            best
+        }
+
         let _is_node_floor = matches!(node, RegionNode::Floor { .. });
 
         // NOTE: `im_dilate` takes a *diameter* in pixels, but for toolpath planning we usually
@@ -335,19 +352,26 @@ pub fn create_toolpaths_from_region_tree(
         match node {
             RegionNode::Floor {
                 region_iz,
-                loweset_ply_i_in_band,
                 bottom_thou,
                 ..
             } => {
                 for region_i in region_iz {
                     splat_region_i_into_mask_im(*region_i, region_infos, cut_mask_im);
 
+                    // debug_ui::add_mask_im(
+                    //     &format!("{} floor_mask after={} region_i={}", name, z_thou.0, region_i.0),
+                    //     cut_mask_im,
+                    // );
+
                     let label_i = region_i.0 as usize;
                     assert!(label_i < region_infos.len());
                     let label_info = &region_infos[label_i];
                     roi.union(label_info.roi);
                 }
-                curr_ply_i_u16 = (loweset_ply_i_in_band.0 as u16).saturating_sub(1); // Floor uses ply below the lowest in band
+                // For a floor, the "above" threshold should be derived from the depth we cut
+                // to (the band's bottom). Using `lowest_ply_i_in_band - 1` can underflow to 0
+                // and incorrectly mark essentially the entire ROI as "above".
+                curr_ply_i_u16 = ply_threshold_at_depth(cut_bands, *bottom_thou);
                 z_thou = *bottom_thou;
             }
             RegionNode::Cut {

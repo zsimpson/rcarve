@@ -24,7 +24,7 @@ const TEST_JSON: &str = r#"
                 "owner_layer_guid": "R7Y9XP4VNB",
                 "guid": "HZWKZRTQJV",
                 "top_thou": 850,
-                "hidden": true,
+                "hidden": false,
                 "is_floor": false,
                 "mpoly": [
                     {
@@ -39,7 +39,7 @@ const TEST_JSON: &str = r#"
                 "owner_layer_guid": "R7Y9XP4VNB",
                 "guid": "ZWKKED69NS",
                 "top_thou": 720,
-                "hidden": true,
+                "hidden": false,
                 "is_floor": false,
                 "mpoly": [
                     {
@@ -52,7 +52,7 @@ const TEST_JSON: &str = r#"
                 "owner_layer_guid": "LD_HOLE",
                 "guid": "PD_HOLE",
                 "top_thou": 500,
-                "hidden": false,
+                "hidden": true,
                 "is_floor": false,
                 "mpoly": [
                     {
@@ -80,7 +80,7 @@ const TEST_JSON: &str = r#"
         "layer_desc_by_guid": {
             "R7Y9XP4VNB": {
                 "guid": "R7Y9XP4VNB",
-                "hidden": true,
+                "hidden": false,
                 "is_frame": false
             },
             "LD_HOLE": {
@@ -263,60 +263,60 @@ fn main() {
 
     println!();
 
-    let refine_toolpaths = [];
+    // let refine_toolpaths = [];
 
     // Refine
-    // let refine_toolpaths = {
-    //     let refine_cut_bands = region_tree::create_cut_bands(
-    //         "refine",
-    //         &ply_im,
-    //         &comp_desc.bands,
-    //         &region_im,
-    //         &region_infos,
-    //         &sorted_ply_descs,
-    //     );
+    let refine_toolpaths = {
+        let refine_cut_bands = region_tree::create_cut_bands(
+            "refine",
+            &ply_im,
+            &comp_desc.bands,
+            &region_im,
+            &region_infos,
+            &sorted_ply_descs,
+        );
 
-    //     println!("Refine cut bands:");
-    //     region_tree::debug_print_cut_bands(&refine_cut_bands);
+        println!("Refine cut bands:");
+        region_tree::debug_print_cut_bands(&refine_cut_bands);
 
-    //     let refine_region_root = region_tree::create_region_tree(&refine_cut_bands, &region_infos);
+        let refine_region_root = region_tree::create_region_tree(&refine_cut_bands, &region_infos);
 
-    //     let refine_tool_dia_pix = 10_usize;
-    //     let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
-    //     let refine_margin_pix = 0_usize;
-    //     let refine_pride_thou = Thou(0);
-    //     let refine_perimeter_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
+        let refine_tool_dia_pix = 10_usize;
+        let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
+        let refine_margin_pix = 0_usize;
+        let refine_pride_thou = Thou(0);
+        let refine_perimeter_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
-    //     // Can be increased if needed to clear tight spots.
-    //     // This is a choice between pride on rough. If there's pride added
-    //     // on rough the detail needs to surface in which case you only need
-    //     // one perimeter on refine. However if you allow rough to go to the
-    //     // bottom then you need at least as many perimeters as the ratio of
-    //     // the rough to refine tool diameters.
-    //     let n_perimeters = 2;
+        // Can be increased if needed to clear tight spots.
+        // This is a choice between pride on rough. If there's pride added
+        // on rough the detail needs to surface in which case you only need
+        // one perimeter on refine. However if you allow rough to go to the
+        // bottom then you need at least as many perimeters as the ratio of
+        // the rough to refine tool diameters.
+        let n_perimeters = 2;
 
-    //     let mut refine_toolpaths = create_toolpaths_from_region_tree(
-    //         "refine",
-    //         &refine_region_root,
-    //         &refine_cut_bands,
-    //         tool_i,
-    //         refine_tool_dia_pix,
-    //         refine_step_size_pix,
-    //         refine_margin_pix,
-    //         refine_pride_thou,
-    //         &ply_im,
-    //         &region_im,
-    //         &region_infos,
-    //         n_perimeters,  
-    //         refine_perimeter_step_size_pix,
-    //         false,
-    //         None,
-    //     );
+        let mut refine_toolpaths = create_toolpaths_from_region_tree(
+            "refine",
+            &refine_region_root,
+            &refine_cut_bands,
+            tool_i,
+            refine_tool_dia_pix,
+            refine_step_size_pix,
+            refine_margin_pix,
+            refine_pride_thou,
+            &ply_im,
+            &region_im,
+            &region_infos,
+            n_perimeters,  
+            refine_perimeter_step_size_pix,
+            false,
+            None,
+        );
 
-    //     sort_toolpaths(&mut refine_toolpaths, &refine_region_root);
-    //     break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
-    //     refine_toolpaths
-    // };
+        sort_toolpaths(&mut refine_toolpaths, &refine_region_root);
+        break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
+        refine_toolpaths
+    };
 
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
