@@ -531,7 +531,14 @@ pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath]) {
     }
 
     for toolpath in toolpaths.iter_mut() {
-        toolpath.cuts = CutPixels::default();
+        // Ensure `cuts` is parallel to `points`.
+        if toolpath.cuts.len() != toolpath.points.len() {
+            toolpath.cuts = vec![CutPixels::default(); toolpath.points.len()];
+        } else {
+            for c in toolpath.cuts.iter_mut() {
+                *c = CutPixels::default();
+            }
+        }
 
         let tool_radius_pix = toolpath.tool_dia_pix / 2;
         let circle_pixel_iz = circle_lut_by_radius
@@ -539,13 +546,20 @@ pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath]) {
             .expect("circle LUT missing for tool radius");
 
         // Traverse consecutive point pairs.
-        for seg in toolpath.points.windows(2) {
+        for (seg_i, seg) in toolpath.points.windows(2).enumerate() {
             let p0 = seg[0];
             let p1 = seg[1];
 
             let seg_cut =
                 draw_toolpath_segment_single_depth(im, p0, p1, tool_radius_pix, circle_pixel_iz);
-            toolpath.cuts.merge(seg_cut);
+            if seg_i < toolpath.cuts.len() {
+                toolpath.cuts[seg_i] = seg_cut;
+            }
+        }
+
+        // Last entry is unused by convention.
+        if let Some(last) = toolpath.cuts.last_mut() {
+            *last = CutPixels::default();
         }
     }
 }

@@ -45,7 +45,9 @@ pub struct ToolPath {
     pub tool_dia_pix: usize,
     pub tool_i: usize,
     pub tree_node_id: usize,
-    pub cuts: CutPixels,
+    /// Per-segment cut accounting. `cuts[i]` corresponds to the segment `points[i] -> points[i+1]`.
+    /// The last entry is unused (so `cuts.len() == points.len()`).
+    pub cuts: Vec<CutPixels>,
 }
 
 fn create_perimeter_tool_paths(
@@ -65,13 +67,15 @@ fn create_perimeter_tool_paths(
         });
     }
 
+    let cuts = vec![CutPixels::default(); points.len()];
+
     vec![ToolPath {
         points,
         closed: true,
         tool_dia_pix,
         tool_i,
         tree_node_id,
-        cuts: CutPixels::default(),
+        cuts,
     }]
 }
 // fn repeat_toolpaths(
@@ -192,7 +196,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                     tool_dia_pix,
                     tool_i,
                     tree_node_id,
-                    cuts: CutPixels::default(),
+                    cuts: vec![CutPixels::default(); 2],
                 });
             }
         }
@@ -217,7 +221,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
-                cuts: CutPixels::default(),
+                cuts: vec![CutPixels::default(); 2],
             });
         }
     }
@@ -572,6 +576,757 @@ pub fn create_toolpaths_from_region_tree(
     paths
 }
 
+pub fn sort_toolpaths(toolpaths: &mut Vec<ToolPath>, region_root: &RegionRoot) {
+    fn band_i(node: &RegionNode) -> usize {
+        match node {
+            RegionNode::Floor { band_i, .. } => *band_i,
+            RegionNode::Cut { band_i, .. } => *band_i,
+        }
+    }
+
+    // Tree traversal for cutting order:
+    // - Keep sibling ordering as-built (caller said siblings can be any order).
+    // - A floor node reveals its children: we visit its subtree immediately after the floor.
+    fn build_node_visit_order(region_root: &RegionRoot) -> Vec<usize> {
+        fn recurse(nodes: &[RegionNode], out: &mut Vec<usize>) {
+            if nodes.is_empty() {
+                return;
+            }
+
+            // Sibling nodes must all be in the same band.
+            let b0 = band_i(&nodes[0]);
+            debug_assert!(nodes.iter().all(|n| band_i(n) == b0));
+            assert!(nodes.iter().all(|n| band_i(n) == b0));
+
+            for n in nodes {
+                out.push(n.get_id());
+                if let RegionNode::Floor { children, .. } = n {
+                    recurse(children, out);
+                }
+            }
+        }
+
+        let mut order: Vec<usize> = Vec::new();
+        recurse(region_root.children(), &mut order);
+        order
+    }
+
+    fn dist2_xy(a: &IV3, b: &IV3) -> i64 {
+        let dx = (a.x as i64) - (b.x as i64);
+        let dy = (a.y as i64) - (b.y as i64);
+        dx * dx + dy * dy
+    }
+
+    fn ensure_cuts_parallel(tp: &mut ToolPath) {
+        if tp.cuts.len() != tp.points.len() {
+            tp.cuts = vec![CutPixels::default(); tp.points.len()];
+        }
+    }
+
+    fn reverse_open_toolpath_in_place(tp: &mut ToolPath) {
+        let n = tp.points.len();
+        if n <= 1 {
+            return;
+        }
+        ensure_cuts_parallel(tp);
+
+        // Reverse points, and remap segment cuts so `cuts[i]` still corresponds to
+        // `points[i] -> points[i+1]`.
+        let old_cuts = std::mem::take(&mut tp.cuts);
+        let mut new_cuts = vec![CutPixels::default(); n];
+        if old_cuts.len() == n {
+            // Segments are indices 0..n-1 (exclusive last point). Last entry is unused.
+            // After reversing points, segment i corresponds to old segment (n-2-i).
+            for i in 0..(n - 1) {
+                new_cuts[i] = old_cuts[n - 2 - i];
+            }
+        }
+        tp.cuts = new_cuts;
+        tp.points.reverse();
+    }
+
+    fn choose_open_orientation(tp: &mut ToolPath, curr: &IV3) {
+        if tp.points.len() <= 1 {
+            return;
+        }
+        ensure_cuts_parallel(tp);
+        let first = tp.points.first().unwrap();
+        let last = tp.points.last().unwrap();
+        let d_first = dist2_xy(curr, first);
+        let d_last = dist2_xy(curr, last);
+        if d_last < d_first {
+            reverse_open_toolpath_in_place(tp);
+        }
+    }
+
+    fn roll_closed_to_nearest(tp: &mut ToolPath, curr: &IV3) {
+        if tp.points.len() <= 1 {
+            return;
+        }
+
+        // Work on a ring representation (no duplicated closing vertex) and a parallel
+        // per-edge cut array of length `ring_len`.
+        let mut ring_pts: Vec<IV3> = std::mem::take(&mut tp.points);
+        let old_cuts: Vec<CutPixels> = std::mem::take(&mut tp.cuts);
+
+        let had_closing_dup = ring_pts
+            .first()
+            .zip(ring_pts.last())
+            .map(|(a, b)| a == b)
+            .unwrap_or(false);
+        if had_closing_dup {
+            ring_pts.pop();
+        }
+
+        if ring_pts.len() <= 1 {
+            // Restore the closure representation.
+            if ring_pts.len() == 1 {
+                ring_pts.push(ring_pts[0]);
+            }
+            tp.points = ring_pts;
+            tp.cuts = vec![CutPixels::default(); tp.points.len()];
+            return;
+        }
+
+        let ring_len = ring_pts.len();
+        let mut seg_cuts: Vec<CutPixels> = vec![CutPixels::default(); ring_len];
+
+        // Best-effort preservation of existing cuts.
+        if had_closing_dup {
+            // points len was ring_len+1; segment cuts occupy [0..ring_len), last entry unused.
+            if old_cuts.len() == ring_len + 1 {
+                seg_cuts.copy_from_slice(&old_cuts[..ring_len]);
+            }
+        } else {
+            // No explicit closing vertex: only segments along windows(2) exist.
+            // Preserve those, and leave the closing edge as default.
+            if old_cuts.len() == ring_len {
+                for i in 0..ring_len.saturating_sub(1) {
+                    seg_cuts[i] = old_cuts[i];
+                }
+            }
+        }
+
+        let mut best_i = 0usize;
+        let mut best_d = dist2_xy(curr, &ring_pts[0]);
+        for (i, p) in ring_pts.iter().enumerate().skip(1) {
+            let d = dist2_xy(curr, p);
+            if d < best_d {
+                best_d = d;
+                best_i = i;
+            }
+        }
+        if best_i != 0 {
+            ring_pts.rotate_left(best_i);
+            seg_cuts.rotate_left(best_i);
+        }
+
+        // Deterministic direction choice at the chosen start: take the direction
+        // with the smaller next-step distance (ties deterministic by (y,x,z)).
+        if ring_pts.len() >= 3 {
+            let next = &ring_pts[1];
+            let prev = &ring_pts[ring_pts.len() - 1];
+            let dn = dist2_xy(&ring_pts[0], next);
+            let dp = dist2_xy(&ring_pts[0], prev);
+            let prev_key = (prev.y, prev.x, prev.z);
+            let next_key = (next.y, next.x, next.z);
+            if dp < dn || (dp == dn && prev_key < next_key) {
+                // Reverse direction while keeping the chosen start at index 0.
+                // Vertex list becomes: v0, v_{n-1}, v_{n-2}, ..., v1.
+                ring_pts[1..].reverse();
+                // Segment order becomes the reverse as well.
+                seg_cuts.reverse();
+            }
+        }
+
+        // Re-close the loop explicitly.
+        let first = ring_pts[0];
+        ring_pts.push(first);
+
+        let mut new_cuts: Vec<CutPixels> = vec![CutPixels::default(); ring_pts.len()];
+        for i in 0..seg_cuts.len() {
+            new_cuts[i] = seg_cuts[i];
+        }
+        tp.points = ring_pts;
+        tp.cuts = new_cuts;
+    }
+
+    fn order_toolpaths_for_node(mut tps: Vec<ToolPath>, curr: &mut IV3) -> Vec<ToolPath> {
+        // Top-down within the node.
+        tps.sort_by_key(|tp| std::cmp::Reverse(tp.points.first().map(|p| p.z).unwrap_or(0)));
+
+        let mut out: Vec<ToolPath> = Vec::with_capacity(tps.len());
+        while !tps.is_empty() {
+            let mut best_i = 0usize;
+            let mut best_cost: (i64, i32, u8, i32, i32, usize) = (i64::MAX, 0, 0, 0, 0, 0);
+
+            for (i, tp) in tps.iter().enumerate() {
+                let start = tp.points.first().unwrap_or(&IV3 { x: 0, y: 0, z: 0 });
+                let end = tp.points.last().unwrap_or(start);
+                let mut d = dist2_xy(curr, start);
+                if !tp.closed {
+                    d = d.min(dist2_xy(curr, end));
+                }
+                let z = start.z;
+                let closed_key = if tp.closed { 0u8 } else { 1u8 };
+                let key = (d, -z, closed_key, start.y, start.x, tp.points.len());
+                if key < best_cost {
+                    best_cost = key;
+                    best_i = i;
+                }
+            }
+
+            let mut tp = tps.swap_remove(best_i);
+            if tp.closed {
+                roll_closed_to_nearest(&mut tp, curr);
+            } else {
+                choose_open_orientation(&mut tp, curr);
+            }
+
+            if let Some(last) = tp.points.last().copied() {
+                *curr = last;
+            }
+            out.push(tp);
+        }
+        out
+    }
+
+    // Bucket toolpaths by node id.
+    let mut per_node: Vec<Vec<ToolPath>> = vec![Vec::new(); region_root.get_n_nodes().max(1)];
+    for tp in toolpaths.drain(..) {
+        if tp.tree_node_id < per_node.len() {
+            per_node[tp.tree_node_id].push(tp);
+        } else {
+            // Unknown node id, keep it in a trailing bucket.
+            per_node[0].push(tp);
+        }
+    }
+
+    let node_order = build_node_visit_order(region_root);
+    let mut curr = IV3 { x: 0, y: 0, z: 0 };
+    for node_id in node_order {
+        if node_id >= per_node.len() {
+            continue;
+        }
+        let bucket = std::mem::take(&mut per_node[node_id]);
+        let ordered = order_toolpaths_for_node(bucket, &mut curr);
+        toolpaths.extend(ordered);
+    }
+
+    // Append anything not reached by the traversal (should be rare).
+    for bucket in per_node.into_iter() {
+        toolpaths.extend(bucket);
+    }
+}
+
+pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
+    if toolpaths.is_empty() {
+        return;
+    }
+
+    fn build_open_toolpath_from_segments(
+        points: Vec<IV3>,
+        seg_cuts: Vec<CutPixels>,
+        tool_dia_pix: usize,
+        tool_i: usize,
+        tree_node_id: usize,
+    ) -> ToolPath {
+        debug_assert!(points.len() >= 2);
+        debug_assert_eq!(seg_cuts.len(), points.len().saturating_sub(1));
+
+        let mut cuts = vec![CutPixels::default(); points.len()];
+        for (i, c) in seg_cuts.into_iter().enumerate() {
+            if i < cuts.len() {
+                cuts[i] = c;
+            }
+        }
+        if let Some(last) = cuts.last_mut() {
+            *last = CutPixels::default();
+        }
+
+        ToolPath {
+            points,
+            closed: false,
+            tool_dia_pix,
+            tool_i,
+            tree_node_id,
+            cuts,
+        }
+    }
+
+    fn cull_open_toolpath(
+        points: Vec<IV3>,
+        cuts_in: Vec<CutPixels>,
+        tool_dia_pix: usize,
+        tool_i: usize,
+        tree_node_id: usize,
+    ) -> Vec<ToolPath> {
+        if points.len() < 2 {
+            return Vec::new();
+        }
+
+        let seg_n = points.len() - 1;
+        let mut out: Vec<ToolPath> = Vec::new();
+
+        let mut run_points: Vec<IV3> = Vec::new();
+        let mut run_cuts: Vec<CutPixels> = Vec::new();
+
+        for seg_i in 0..seg_n {
+            let cut = cuts_in.get(seg_i).copied().unwrap_or_default();
+            let keep = cut.pixels_changed > 0;
+
+            if keep {
+                if run_points.is_empty() {
+                    run_points.push(points[seg_i]);
+                }
+                run_points.push(points[seg_i + 1]);
+                run_cuts.push(cut);
+            } else if !run_points.is_empty() {
+                out.push(build_open_toolpath_from_segments(
+                    std::mem::take(&mut run_points),
+                    std::mem::take(&mut run_cuts),
+                    tool_dia_pix,
+                    tool_i,
+                    tree_node_id,
+                ));
+            }
+        }
+
+        if !run_points.is_empty() {
+            out.push(build_open_toolpath_from_segments(
+                run_points,
+                run_cuts,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+            ));
+        }
+
+        out
+    }
+
+    fn cull_closed_toolpath(
+        mut points: Vec<IV3>,
+        mut cuts_in: Vec<CutPixels>,
+        tool_dia_pix: usize,
+        tool_i: usize,
+        tree_node_id: usize,
+    ) -> Vec<ToolPath> {
+        // Normalize to an explicitly closed loop (duplicate first point at the end)
+        // with `cuts.len() == points.len()`.
+        if points.len() < 3 {
+            return Vec::new();
+        }
+
+        let has_dup = points.first() == points.last();
+        if !has_dup {
+            let first = points[0];
+            points.push(first);
+
+            // Best-effort carry over existing per-segment cuts; the closing edge gets default.
+            let mut new_cuts = vec![CutPixels::default(); points.len()];
+            for i in 0..points.len().saturating_sub(2) {
+                if i < cuts_in.len() {
+                    new_cuts[i] = cuts_in[i];
+                }
+            }
+            cuts_in = new_cuts;
+        } else if cuts_in.len() != points.len() {
+            // If we don't have a parallel cut array, we can't safely cull segments.
+            let n = points.len();
+            return vec![ToolPath {
+                points,
+                closed: true,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+                cuts: vec![CutPixels::default(); n],
+            }];
+        }
+
+        if points.len() < 4 {
+            // Smallest explicit-closure loop is 3 vertices + duplicate.
+            return Vec::new();
+        }
+
+        let ring_len = points.len() - 1; // number of ring vertices; number of ring segments
+        let seg_count = ring_len;
+
+        let mut keep: Vec<bool> = Vec::with_capacity(seg_count);
+        for i in 0..seg_count {
+            let cut = cuts_in.get(i).copied().unwrap_or_default();
+            keep.push(cut.pixels_changed > 0);
+        }
+
+        if keep.iter().all(|&k| k) {
+            // Keep as a closed loop.
+            if let Some(last) = cuts_in.last_mut() {
+                *last = CutPixels::default();
+            }
+            return vec![ToolPath {
+                points,
+                closed: true,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+                cuts: cuts_in,
+            }];
+        }
+
+        if keep.iter().all(|&k| !k) {
+            return Vec::new();
+        }
+
+        // Linearize the circular segments by starting immediately after a removed segment.
+        let first_false = keep
+            .iter()
+            .position(|&k| !k)
+            .unwrap_or(0);
+        let mut idx = (first_false + 1) % seg_count;
+
+        let mut out: Vec<ToolPath> = Vec::new();
+        let mut run_points: Vec<IV3> = Vec::new();
+        let mut run_cuts: Vec<CutPixels> = Vec::new();
+
+        for _ in 0..seg_count {
+            if keep[idx] {
+                if run_points.is_empty() {
+                    run_points.push(points[idx]);
+                }
+                run_points.push(points[idx + 1]);
+                run_cuts.push(cuts_in[idx]);
+            } else if !run_points.is_empty() {
+                out.push(build_open_toolpath_from_segments(
+                    std::mem::take(&mut run_points),
+                    std::mem::take(&mut run_cuts),
+                    tool_dia_pix,
+                    tool_i,
+                    tree_node_id,
+                ));
+            }
+
+            idx = (idx + 1) % seg_count;
+        }
+
+        if !run_points.is_empty() {
+            out.push(build_open_toolpath_from_segments(
+                run_points,
+                run_cuts,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+            ));
+        }
+
+        out
+    }
+
+    let mut out: Vec<ToolPath> = Vec::with_capacity(toolpaths.len());
+    for tp in toolpaths.drain(..) {
+        let ToolPath {
+            points,
+            closed,
+            tool_dia_pix,
+            tool_i,
+            tree_node_id,
+            cuts,
+        } = tp;
+
+        if points.len() < 2 {
+            continue;
+        }
+
+        // If the cut annotations aren't parallel, assume we can't make an informed decision.
+        // (This typically means `sim_toolpaths` wasn't run.)
+        if cuts.len() != points.len() {
+            out.push(ToolPath {
+                points,
+                closed,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+                cuts,
+            });
+            continue;
+        }
+
+        if closed {
+            out.extend(cull_closed_toolpath(
+                points,
+                cuts,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+            ));
+        } else {
+            out.extend(cull_open_toolpath(
+                points,
+                cuts,
+                tool_dia_pix,
+                tool_i,
+                tree_node_id,
+            ));
+        }
+    }
+
+    *toolpaths = out;
+}
+
+
+#[cfg(test)]
+mod cull_tests {
+    use super::*;
+
+    fn cut(pixels_changed: u64) -> CutPixels {
+        CutPixels {
+            pixels_changed,
+            depth_sum_thou: 0,
+        }
+    }
+
+    #[test]
+    fn cull_splits_open_toolpath_on_empty_segments() {
+        let mut toolpaths = vec![ToolPath {
+            points: vec![
+                IV3 { x: 0, y: 0, z: 0 },
+                IV3 { x: 1, y: 0, z: 0 },
+                IV3 { x: 2, y: 0, z: 0 },
+                IV3 { x: 3, y: 0, z: 0 },
+            ],
+            closed: false,
+            tool_dia_pix: 1,
+            tool_i: 0,
+            tree_node_id: 0,
+            cuts: vec![cut(5), cut(0), cut(7), CutPixels::default()],
+        }];
+
+        cull_empty_toolpaths(&mut toolpaths);
+        assert_eq!(toolpaths.len(), 2);
+        assert_eq!(toolpaths[0].points.len(), 2);
+        assert_eq!(toolpaths[1].points.len(), 2);
+        assert_eq!(toolpaths[0].points[0].x, 0);
+        assert_eq!(toolpaths[0].points[1].x, 1);
+        assert_eq!(toolpaths[1].points[0].x, 2);
+        assert_eq!(toolpaths[1].points[1].x, 3);
+        assert_eq!(toolpaths[0].cuts[0].pixels_changed, 5);
+        assert_eq!(toolpaths[1].cuts[0].pixels_changed, 7);
+    }
+
+    #[test]
+    fn cull_breaks_closed_toolpath_into_open_runs() {
+        // Triangle loop 0->1->2->0, but the middle edge cuts nothing.
+        let p0 = IV3 { x: 0, y: 0, z: 0 };
+        let p1 = IV3 { x: 1, y: 0, z: 0 };
+        let p2 = IV3 { x: 2, y: 0, z: 0 };
+
+        let mut toolpaths = vec![ToolPath {
+            points: vec![p0, p1, p2, p0],
+            closed: true,
+            tool_dia_pix: 1,
+            tool_i: 0,
+            tree_node_id: 0,
+            cuts: vec![cut(3), cut(0), cut(4), CutPixels::default()],
+        }];
+
+        cull_empty_toolpaths(&mut toolpaths);
+        assert_eq!(toolpaths.len(), 1);
+        assert!(!toolpaths[0].closed);
+        // Remaining segments: 2->0 and 0->1, i.e. points [2,0,1].
+        assert_eq!(toolpaths[0].points, vec![p2, p0, p1]);
+        assert_eq!(toolpaths[0].cuts[0].pixels_changed, 4);
+        assert_eq!(toolpaths[0].cuts[1].pixels_changed, 3);
+    }
+}
+
+
+
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+    use crate::im::label::label_im;
+    use crate::region_tree::{create_cut_bands, create_region_tree};
+    use crate::test_helpers::{ply_im_from_ascii, stub_band_desc, stub_ply_desc};
+
+    fn build_node_visit_order_for_test(region_root: &RegionRoot) -> Vec<usize> {
+        // Keep in sync with the implementation in sort_tool_paths.
+        fn band_i(node: &RegionNode) -> usize {
+            match node {
+                RegionNode::Floor { band_i, .. } => *band_i,
+                RegionNode::Cut { band_i, .. } => *band_i,
+            }
+        }
+        fn recurse(nodes: &[RegionNode], out: &mut Vec<usize>) {
+            if nodes.is_empty() {
+                return;
+            }
+            let b0 = band_i(&nodes[0]);
+            assert!(nodes.iter().all(|n| band_i(n) == b0));
+
+            for n in nodes {
+                out.push(n.get_id());
+                if let RegionNode::Floor { children, .. } = n {
+                    recurse(children, out);
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        recurse(region_root.children(), &mut out);
+        out
+    }
+
+    #[test]
+    fn sort_toolpaths_respects_region_tree_order() {
+        let ply_im = ply_im_from_ascii(
+            r#"
+                11111
+                12221
+                12321
+                12221
+                11111
+            "#,
+        );
+
+        let ply_descs = vec![
+            stub_ply_desc("dummy", 0, true),
+            stub_ply_desc("ply100", 100, false),
+            stub_ply_desc("ply200", 200, false),
+            stub_ply_desc("ply300", 300, false),
+        ];
+        let band_descs = vec![stub_band_desc(400, 0, "rough")];
+
+        let (region_im_raw, region_infos) = label_im(&ply_im);
+        let region_im: RegionIm = region_im_raw.retag::<crate::region_tree::RegionI>();
+        let cut_bands = create_cut_bands(
+            "rough",
+            &ply_im,
+            &band_descs,
+            &region_im,
+            &region_infos,
+            &ply_descs,
+        );
+        let region_root = create_region_tree(&cut_bands, &region_infos);
+
+        let mut toolpaths = create_toolpaths_from_region_tree(
+            "test",
+            &region_root,
+            &cut_bands,
+            0,
+            2,
+            1,
+            0,
+            Thou(0),
+            &ply_im,
+            &region_im,
+            &region_infos,
+            0,
+            1,
+            true,
+            None,
+        );
+
+        // Deliberately scramble the toolpaths a bit.
+        toolpaths.reverse();
+        if toolpaths.len() >= 3 {
+            toolpaths.swap(0, 2);
+        }
+
+        sort_toolpaths(&mut toolpaths, &region_root);
+
+        let node_order = build_node_visit_order_for_test(&region_root);
+        let mut id_to_rank: Vec<usize> = vec![usize::MAX; region_root.get_n_nodes()];
+        for (rank, &id) in node_order.iter().enumerate() {
+            id_to_rank[id] = rank;
+        }
+
+        let mut last_rank = 0usize;
+        for (i, tp) in toolpaths.iter().enumerate() {
+            let r = id_to_rank
+                .get(tp.tree_node_id)
+                .copied()
+                .unwrap_or(usize::MAX);
+            if i == 0 {
+                last_rank = r;
+            } else {
+                assert!(r >= last_rank, "node rank should be nondecreasing");
+                last_rank = r;
+            }
+        }
+    }
+
+    #[test]
+    fn sort_toolpaths_normalizes_open_and_closed_starts() {
+        let ply_im = ply_im_from_ascii(
+            r#"
+                11
+                11
+            "#,
+        );
+
+        let ply_descs = vec![
+            stub_ply_desc("dummy", 0, true),
+            stub_ply_desc("ply100", 100, false),
+        ];
+        let band_descs = vec![stub_band_desc(200, 0, "rough")];
+
+        let (region_im_raw, region_infos) = label_im(&ply_im);
+        let region_im: RegionIm = region_im_raw.retag::<crate::region_tree::RegionI>();
+        let cut_bands = create_cut_bands(
+            "rough",
+            &ply_im,
+            &band_descs,
+            &region_im,
+            &region_infos,
+            &ply_descs,
+        );
+        let region_root = create_region_tree(&cut_bands, &region_infos);
+        let some_node_id = region_root
+            .children()
+            .first()
+            .map(|n| n.get_id())
+            .unwrap_or(0);
+
+        let mut toolpaths = vec![
+            // Open path intentionally reversed (start should become the smaller end).
+            ToolPath {
+                points: vec![IV3 { x: 5, y: 0, z: 100 }, IV3 { x: 1, y: 0, z: 100 }],
+                closed: false,
+                tool_dia_pix: 1,
+                tool_i: 0,
+                tree_node_id: some_node_id,
+                cuts: vec![CutPixels::default(); 2],
+            },
+            // Closed path intentionally not rotated.
+            ToolPath {
+                points: vec![
+                    IV3 { x: 2, y: 0, z: 100 },
+                    IV3 { x: 3, y: 0, z: 100 },
+                    IV3 { x: 1, y: 0, z: 100 },
+                    IV3 { x: 4, y: 0, z: 100 },
+                ],
+                closed: true,
+                tool_dia_pix: 1,
+                tool_i: 0,
+                tree_node_id: some_node_id,
+                cuts: vec![CutPixels::default(); 4],
+            },
+        ];
+
+        sort_toolpaths(&mut toolpaths, &region_root);
+
+        // Find our two toolpaths again by their closed flag.
+        let open = toolpaths.iter().find(|tp| !tp.closed).unwrap();
+        assert_eq!(open.points[0].x, 1);
+        assert_eq!(open.points[1].x, 5);
+
+        let closed = toolpaths.iter().find(|tp| tp.closed).unwrap();
+        // After running the open path, current position is at x=5, so the closed loop
+        // is rolled to start at the nearest vertex (x=4).
+        assert_eq!(closed.points[0].x, 4);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,39 +1459,6 @@ mod tests {
         assert_eq!(paths[3].points[0], IV3 { x: 5, y: 1, z: 123 });
         assert_eq!(paths[3].points[1], IV3 { x: 5, y: 1, z: 123 });
     }
-
-    // #[test]
-    // fn raster_surface_toolpaths_respects_step_and_radius() {
-    //     let mut m = MaskIm::new(5, 5);
-
-    //     // Fill a vertical line at x=0 for all rows; radius=1 should clamp it out.
-    //     for y in 0..5 {
-    //         m.arr[y * m.s + 0] = 255;
-    //     }
-
-    //     // Add a horizontal run at y=2 inside the safe region.
-    //     for x in 1..4 {
-    //         m.arr[2 * m.s + x] = 255;
-    //     }
-
-    //     let roi = ROI {
-    //         l: 0,
-    //         t: 0,
-    //         r: 5,
-    //         b: 5,
-    //     };
-    //     let paths = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 1, 2, Thou(50));
-
-    //     // step=2 visits y=1,3 if clamped, but with radius=1 we scan y in [1,4) => y=1,3.
-    //     // Our horizontal run is at y=2 and should be skipped; and x=0 is clamped out by radius.
-    //     assert!(paths.is_empty());
-
-    //     // Now step=1: y=2 is visited, but x=0 is still clamped out.
-    //     let paths2 = create_raster_surface_tool_paths_from_cut_mask(&m, &roi, 1, 1, Thou(50));
-    //     assert_eq!(paths2.len(), 1);
-    //     assert_eq!(paths2[0].points[0], IV3 { x: 1, y: 2, z: 50 });
-    //     assert_eq!(paths2[0].points[1], IV3 { x: 3, y: 2, z: 50 });
-    // }
 
     #[test]
     fn surface_tool_path_generation_dump_better_image() {
@@ -927,7 +1649,7 @@ mod tests {
                 tool_dia_pix: 1,
                 tool_i: 0,
                 tree_node_id: 0,
-                cuts: CutPixels::default(),
+                cuts: vec![CutPixels::default(); 2],
             },
             ToolPath {
                 points: vec![IV3 { x: 5, y: 5, z: 0 }, IV3 { x: 6, y: 6, z: 0 }],
@@ -935,7 +1657,7 @@ mod tests {
                 tool_dia_pix: 1,
                 tool_i: 0,
                 tree_node_id: 0,
-                cuts: CutPixels::default(),
+                cuts: vec![CutPixels::default(); 2],
             },
         ];
 
@@ -959,7 +1681,7 @@ mod tests {
             tool_dia_pix: 1,
             tool_i: 0,
             tree_node_id: 0,
-            cuts: CutPixels::default(),
+            cuts: vec![CutPixels::default(); 2],
         }];
 
         // Even though z jumps, XY distance is 0 so it should not be broken.
@@ -981,7 +1703,7 @@ mod tests {
             tool_dia_pix: 1,
             tool_i: 0,
             tree_node_id: 0,
-            cuts: CutPixels::default(),
+            cuts: vec![CutPixels::default(); 3],
         }];
 
         break_long_toolpaths(&mut toolpaths, 10);
@@ -1062,22 +1784,24 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         let first = pts[0];
                         pts.push(first);
                     }
+                    let pts_len = pts.len();
                     new_toolpaths.push(ToolPath {
                         points: pts,
                         closed: true,
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
-                        cuts: CutPixels::default(),
+                        cuts: vec![CutPixels::default(); pts_len],
                     });
                 } else {
+                    let pts_len = pts.len();
                     new_toolpaths.push(ToolPath {
                         points: pts,
                         closed: false,
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
-                        cuts: CutPixels::default(),
+                        cuts: vec![CutPixels::default(); pts_len],
                     });
                 }
             }
@@ -1094,7 +1818,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                     tool_dia_pix: tp.tool_dia_pix,
                     tool_i: tp.tool_i,
                     tree_node_id: tp.tree_node_id,
-                    cuts: CutPixels::default(),
+                    cuts: vec![CutPixels::default(); 2],
                 });
                 return;
             }
@@ -1119,7 +1843,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
-                        cuts: CutPixels::default(),
+                        cuts: vec![CutPixels::default(); 2],
                     });
                     prev = next;
                 }
@@ -1143,412 +1867,3 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
     *toolpaths = new_toolpaths;
 }
 
-pub fn sort_tool_paths(toolpaths: &mut Vec<ToolPath>, region_root: &RegionRoot) {
-    fn band_i(node: &RegionNode) -> usize {
-        match node {
-            RegionNode::Floor { band_i, .. } => *band_i,
-            RegionNode::Cut { band_i, .. } => *band_i,
-        }
-    }
-
-    // Tree traversal for cutting order:
-    // - Keep sibling ordering as-built (caller said siblings can be any order).
-    // - A floor node reveals its children: we visit its subtree immediately after the floor.
-    fn build_node_visit_order(region_root: &RegionRoot) -> Vec<usize> {
-        fn recurse(nodes: &[RegionNode], out: &mut Vec<usize>) {
-            if nodes.is_empty() {
-                return;
-            }
-
-            // Sibling nodes must all be in the same band.
-            let b0 = band_i(&nodes[0]);
-            debug_assert!(nodes.iter().all(|n| band_i(n) == b0));
-            assert!(nodes.iter().all(|n| band_i(n) == b0));
-
-            for n in nodes {
-                out.push(n.get_id());
-                if let RegionNode::Floor { children, .. } = n {
-                    recurse(children, out);
-                }
-            }
-        }
-
-        let mut order: Vec<usize> = Vec::new();
-        recurse(region_root.children(), &mut order);
-        order
-    }
-
-    fn dist2_xy(a: &IV3, b: &IV3) -> i64 {
-        let dx = (a.x as i64) - (b.x as i64);
-        let dy = (a.y as i64) - (b.y as i64);
-        dx * dx + dy * dy
-    }
-
-    fn choose_open_orientation(tp: &mut ToolPath, curr: &IV3) {
-        if tp.points.len() <= 1 {
-            return;
-        }
-        let first = tp.points.first().unwrap();
-        let last = tp.points.last().unwrap();
-        let d_first = dist2_xy(curr, first);
-        let d_last = dist2_xy(curr, last);
-        if d_last < d_first {
-            tp.points.reverse();
-        }
-    }
-
-    fn roll_closed_to_nearest(tp: &mut ToolPath, curr: &IV3) {
-        if tp.points.len() <= 1 {
-            return;
-        }
-
-        // Many downstream consumers treat a path as "closed" by expecting the last
-        // vertex to equal the first (so the final segment is explicit). Rotating a
-        // closed polyline that already has a duplicated closing vertex would break
-        // that invariant (and appear to "lose" the closing segment).
-        //
-        // Normalize to a ring without the duplicated last vertex, then re-close at end.
-        let had_closing_dup = tp
-            .points
-            .first()
-            .zip(tp.points.last())
-            .map(|(a, b)| a == b)
-            .unwrap_or(false);
-        if had_closing_dup {
-            tp.points.pop();
-            if tp.points.len() <= 1 {
-                // Restore the closure representation.
-                let first = tp
-                    .points
-                    .first()
-                    .copied()
-                    .unwrap_or(IV3 { x: 0, y: 0, z: 0 });
-                tp.points.push(first);
-                return;
-            }
-        }
-
-        let mut best_i = 0usize;
-        let mut best_d = dist2_xy(curr, &tp.points[0]);
-        for (i, p) in tp.points.iter().enumerate().skip(1) {
-            let d = dist2_xy(curr, p);
-            if d < best_d {
-                best_d = d;
-                best_i = i;
-            }
-        }
-        if best_i != 0 {
-            tp.points.rotate_left(best_i);
-        }
-
-        // Deterministic direction choice at the chosen start: take the direction
-        // with the smaller next-step distance (ties deterministic by (y,x,z)).
-        if tp.points.len() >= 3 {
-            let next = &tp.points[1];
-            let prev = &tp.points[tp.points.len() - 1];
-            let dn = dist2_xy(&tp.points[0], next);
-            let dp = dist2_xy(&tp.points[0], prev);
-            let prev_key = (prev.y, prev.x, prev.z);
-            let next_key = (next.y, next.x, next.z);
-            if dp < dn || (dp == dn && prev_key < next_key) {
-                tp.points.reverse();
-                // After reversing, the chosen start (previously index 0) is now at the end.
-                // Rotate it back to index 0.
-                let n = tp.points.len();
-                if n > 1 {
-                    tp.points.rotate_left(n - 1);
-                }
-            }
-        }
-
-        // Re-close the loop explicitly.
-        let first = tp.points[0];
-        if tp.points.last().copied() != Some(first) {
-            tp.points.push(first);
-        }
-    }
-
-    fn order_toolpaths_for_node(mut tps: Vec<ToolPath>, curr: &mut IV3) -> Vec<ToolPath> {
-        // Top-down within the node.
-        tps.sort_by_key(|tp| std::cmp::Reverse(tp.points.first().map(|p| p.z).unwrap_or(0)));
-
-        let mut out: Vec<ToolPath> = Vec::with_capacity(tps.len());
-        while !tps.is_empty() {
-            let mut best_i = 0usize;
-            let mut best_cost: (i64, i32, u8, i32, i32, usize) = (i64::MAX, 0, 0, 0, 0, 0);
-
-            for (i, tp) in tps.iter().enumerate() {
-                let start = tp.points.first().unwrap_or(&IV3 { x: 0, y: 0, z: 0 });
-                let end = tp.points.last().unwrap_or(start);
-                let mut d = dist2_xy(curr, start);
-                if !tp.closed {
-                    d = d.min(dist2_xy(curr, end));
-                }
-                let z = start.z;
-                let closed_key = if tp.closed { 0u8 } else { 1u8 };
-                let key = (d, -z, closed_key, start.y, start.x, tp.points.len());
-                if key < best_cost {
-                    best_cost = key;
-                    best_i = i;
-                }
-            }
-
-            let mut tp = tps.swap_remove(best_i);
-            if tp.closed {
-                roll_closed_to_nearest(&mut tp, curr);
-            } else {
-                choose_open_orientation(&mut tp, curr);
-            }
-
-            if let Some(last) = tp.points.last().copied() {
-                *curr = last;
-            }
-            out.push(tp);
-        }
-        out
-    }
-
-    // Bucket toolpaths by node id.
-    let mut per_node: Vec<Vec<ToolPath>> = vec![Vec::new(); region_root.get_n_nodes().max(1)];
-    for tp in toolpaths.drain(..) {
-        if tp.tree_node_id < per_node.len() {
-            per_node[tp.tree_node_id].push(tp);
-        } else {
-            // Unknown node id, keep it in a trailing bucket.
-            per_node[0].push(tp);
-        }
-    }
-
-    let node_order = build_node_visit_order(region_root);
-    let mut curr = IV3 { x: 0, y: 0, z: 0 };
-    for node_id in node_order {
-        if node_id >= per_node.len() {
-            continue;
-        }
-        let bucket = std::mem::take(&mut per_node[node_id]);
-        let ordered = order_toolpaths_for_node(bucket, &mut curr);
-        toolpaths.extend(ordered);
-    }
-
-    // Append anything not reached by the traversal (should be rare).
-    for bucket in per_node.into_iter() {
-        toolpaths.extend(bucket);
-    }
-}
-
-#[cfg(test)]
-mod sort_tests {
-    use super::*;
-    use crate::im::label::label_im;
-    use crate::region_tree::{create_cut_bands, create_region_tree};
-    use crate::test_helpers::{ply_im_from_ascii, stub_band_desc, stub_ply_desc};
-
-    fn build_node_visit_order_for_test(region_root: &RegionRoot) -> Vec<usize> {
-        // Keep in sync with the implementation in sort_tool_paths.
-        fn band_i(node: &RegionNode) -> usize {
-            match node {
-                RegionNode::Floor { band_i, .. } => *band_i,
-                RegionNode::Cut { band_i, .. } => *band_i,
-            }
-        }
-        fn recurse(nodes: &[RegionNode], out: &mut Vec<usize>) {
-            if nodes.is_empty() {
-                return;
-            }
-            let b0 = band_i(&nodes[0]);
-            assert!(nodes.iter().all(|n| band_i(n) == b0));
-
-            for n in nodes {
-                out.push(n.get_id());
-                if let RegionNode::Floor { children, .. } = n {
-                    recurse(children, out);
-                }
-            }
-        }
-
-        let mut out = Vec::new();
-        recurse(region_root.children(), &mut out);
-        out
-    }
-
-    #[test]
-    fn sort_toolpaths_respects_region_tree_order() {
-        let ply_im = ply_im_from_ascii(
-            r#"
-                11111
-                12221
-                12321
-                12221
-                11111
-            "#,
-        );
-
-        let ply_descs = vec![
-            stub_ply_desc("dummy", 0, true),
-            stub_ply_desc("ply100", 100, false),
-            stub_ply_desc("ply200", 200, false),
-            stub_ply_desc("ply300", 300, false),
-        ];
-        let band_descs = vec![stub_band_desc(400, 0, "rough")];
-
-        let (region_im_raw, region_infos) = label_im(&ply_im);
-        let region_im: RegionIm = region_im_raw.retag::<crate::region_tree::RegionI>();
-        let cut_bands = create_cut_bands(
-            "rough",
-            &ply_im,
-            &band_descs,
-            &region_im,
-            &region_infos,
-            &ply_descs,
-        );
-        let region_root = create_region_tree(&cut_bands, &region_infos);
-
-        let mut toolpaths = create_toolpaths_from_region_tree(
-            "test",
-            &region_root,
-            &cut_bands,
-            0,
-            2,
-            1,
-            0,
-            Thou(0),
-            &ply_im,
-            &region_im,
-            &region_infos,
-            0,
-            1,
-            true,
-            None,
-        );
-
-        // Deliberately scramble the toolpaths a bit.
-        toolpaths.reverse();
-        if toolpaths.len() >= 3 {
-            toolpaths.swap(0, 2);
-        }
-
-        sort_tool_paths(&mut toolpaths, &region_root);
-
-        let node_order = build_node_visit_order_for_test(&region_root);
-        let mut id_to_rank: Vec<usize> = vec![usize::MAX; region_root.get_n_nodes()];
-        for (rank, &id) in node_order.iter().enumerate() {
-            id_to_rank[id] = rank;
-        }
-
-        let mut last_rank = 0usize;
-        for (i, tp) in toolpaths.iter().enumerate() {
-            let r = id_to_rank
-                .get(tp.tree_node_id)
-                .copied()
-                .unwrap_or(usize::MAX);
-            if i == 0 {
-                last_rank = r;
-            } else {
-                assert!(r >= last_rank, "node rank should be nondecreasing");
-                last_rank = r;
-            }
-        }
-    }
-
-    #[test]
-    fn sort_toolpaths_normalizes_open_and_closed_starts() {
-        let ply_im = ply_im_from_ascii(
-            r#"
-                11
-                11
-            "#,
-        );
-
-        let ply_descs = vec![
-            stub_ply_desc("dummy", 0, true),
-            stub_ply_desc("ply100", 100, false),
-        ];
-        let band_descs = vec![stub_band_desc(200, 0, "rough")];
-
-        let (region_im_raw, region_infos) = label_im(&ply_im);
-        let region_im: RegionIm = region_im_raw.retag::<crate::region_tree::RegionI>();
-        let cut_bands = create_cut_bands(
-            "rough",
-            &ply_im,
-            &band_descs,
-            &region_im,
-            &region_infos,
-            &ply_descs,
-        );
-        let region_root = create_region_tree(&cut_bands, &region_infos);
-        let some_node_id = region_root
-            .children()
-            .first()
-            .map(|n| n.get_id())
-            .unwrap_or(0);
-
-        let mut toolpaths = vec![
-            // Open path intentionally reversed (start should become the smaller end).
-            ToolPath {
-                points: vec![IV3 { x: 5, y: 0, z: 100 }, IV3 { x: 1, y: 0, z: 100 }],
-                closed: false,
-                tool_dia_pix: 1,
-                tool_i: 0,
-                tree_node_id: some_node_id,
-                cuts: CutPixels::default(),
-            },
-            // Closed path intentionally not rotated.
-            ToolPath {
-                points: vec![
-                    IV3 { x: 2, y: 0, z: 100 },
-                    IV3 { x: 3, y: 0, z: 100 },
-                    IV3 { x: 1, y: 0, z: 100 },
-                    IV3 { x: 4, y: 0, z: 100 },
-                ],
-                closed: true,
-                tool_dia_pix: 1,
-                tool_i: 0,
-                tree_node_id: some_node_id,
-                cuts: CutPixels::default(),
-            },
-        ];
-
-        sort_tool_paths(&mut toolpaths, &region_root);
-
-        // Find our two toolpaths again by their closed flag.
-        let open = toolpaths.iter().find(|tp| !tp.closed).unwrap();
-        assert_eq!(open.points[0].x, 1);
-        assert_eq!(open.points[1].x, 5);
-
-        let closed = toolpaths.iter().find(|tp| tp.closed).unwrap();
-        // After running the open path, current position is at x=5, so the closed loop
-        // is rolled to start at the nearest vertex (x=4).
-        assert_eq!(closed.points[0].x, 4);
-    }
-}
-
-/*
-
-Now i want to implement sort_tool_paths().  Here's an example of a _region_root tree:
-
-Root: num_children=3
-  0: Cut: path='0', parent_id=, band_i=0, cut_plane_i=0, ply_guid=HZWKZRTQJV, top_thou=850, region_i=3, region_size=80000, z_thou=850
-  1: Flr: path='1', parent_id=, band_i=0, cut_plane_i=1, ply_guid=floor_0, top_thou=800, floor_regions=[1, 2]
-    2: Cut: path='1.0', parent_id=1, band_i=1, cut_plane_i=0, ply_guid=ZWKKED69NS, top_thou=500, region_i=2, region_size=11900, z_thou=500
-    3: Cut: path='1.1', parent_id=1, band_i=1, cut_plane_i=1, ply_guid=FLOOR_PLY_DESC, top_thou=100, region_i=1, region_size=148100, z_thou=100
-  4: Flr: path='2', parent_id=, band_i=0, cut_plane_i=1, ply_guid=floor_0, top_thou=800, floor_regions=[4]
-    5: Cut: path='2.0', parent_id=4, band_i=1, cut_plane_i=1, ply_guid=FLOOR_PLY_DESC, top_thou=100, region_i=4, region_size=10000, z_thou=100
-
-
-The toolpaths are list of ToolPath and toolPath includes tree_node_id which can be access via the LUT in RegionRoot.get_node_by_id
-
-So the rules of sorting are that
-    Toolpaths come in two varieties: closed and open.
-        Closed toolpaths are perimeters which are loops and can be started anywhere.
-        Open toolpaths are should always start and one end or the other.
-        When a tool path is sorted it may need to be "rolled" so that its first verts start at [0]
-
-    Sibling nodes must all be in the same band_i (assert that)
-
-    Sibling nodes can be sorted in any order amoung themselves.
-
-    A floor node "reveals" chilren below it and those children nodes are added before sibling nodes.
-
-    All of a node and its children must be cut together before moving to the next sibling node.
-
-*/

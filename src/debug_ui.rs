@@ -520,6 +520,10 @@ mod imp {
         }
     }
 
+    fn monospace_wrap(ui: &mut egui::Ui, text: impl Into<String>) {
+        ui.add(egui::Label::new(egui::RichText::new(text.into()).monospace()).wrap());
+    }
+
     // Image viewer component (reuses the old im::debug_ui behavior)
     // -------------------------------------------------------------------------
 
@@ -644,14 +648,22 @@ mod imp {
             self.render_if_needed(ctx);
 
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&self.title);
-                    ui.separator();
-                    ui.monospace(format!("mode={:?} mul={:.4}", self.mode, self.params.mul));
-                    if !self.hover_text.is_empty() {
-                        ui.separator();
-                        ui.monospace(&self.hover_text);
-                    }
+                ui.group(|ui| {
+                    ui.set_min_height(36.0);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .max_height(60.0)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(&self.title);
+                                ui.separator();
+                                monospace_wrap(ui, format!("mode={:?} mul={:.4}", self.mode, self.params.mul));
+                                if !self.hover_text.is_empty() {
+                                    ui.separator();
+                                    monospace_wrap(ui, self.hover_text.clone());
+                                }
+                            });
+                        });
                 });
 
                 let w = self.src.w;
@@ -986,42 +998,62 @@ mod imp {
             self.render_if_needed(ctx);
 
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&self.title);
-                    ui.separator();
-
-                    let len = self.toolpath_len();
-                    match self.active_toolpath_index() {
-                        Some(i) => {
-                            ui.monospace(format!(
-                                "toolpath={i}/{last} (applied={}/{len})",
-                                self.applied_count,
-                                last = len.saturating_sub(1)
-                            ));
-
-                            if let Some(tp) = self.movie_toolpaths.get(i) {
+                ui.group(|ui| {
+                    ui.set_min_height(36.0);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .max_height(70.0)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(&self.title);
                                 ui.separator();
-                                ui.monospace(format!(
-                                    "cut_pixels={} cut_depth_sum_thou={}",
-                                    tp.cuts.pixels_changed, tp.cuts.depth_sum_thou
-                                ));
-                            }
-                        }
-                        None => {
-                            ui.monospace(format!("toolpath=none (applied=0/{len})"));
-                        }
-                    };
 
-                    ui.separator();
-                    ui.monospace(format!("mul={:.4}", self.params.mul));
+                                let len = self.toolpath_len();
+                                match self.active_toolpath_index() {
+                                    Some(i) => {
+                                        monospace_wrap(
+                                            ui,
+                                            format!(
+                                                "toolpath={i}/{last} (applied={}/{len})",
+                                                self.applied_count,
+                                                last = len.saturating_sub(1)
+                                            ),
+                                        );
 
-                    ui.separator();
-                    ui.monospace(format!("tool_dia_pix={}", self.tool_dia_pix));
+                                        if let Some(tp) = self.movie_toolpaths.get(i) {
+                                            ui.separator();
+                                            let mut cut_pixels: u64 = 0;
+                                            let mut cut_depth_sum_thou: u64 = 0;
+                                            for c in tp.cuts.iter() {
+                                                cut_pixels += c.pixels_changed;
+                                                cut_depth_sum_thou += c.depth_sum_thou;
+                                            }
+                                            monospace_wrap(
+                                                ui,
+                                                format!(
+                                                    "cut_pixels={} cut_depth_sum_thou={}",
+                                                    cut_pixels, cut_depth_sum_thou
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    None => {
+                                        monospace_wrap(ui, format!("toolpath=none (applied=0/{len})"));
+                                    }
+                                };
 
-                    if !self.hover_text.is_empty() {
-                        ui.separator();
-                        ui.monospace(&self.hover_text);
-                    }
+                                ui.separator();
+                                monospace_wrap(ui, format!("mul={:.4}", self.params.mul));
+
+                                ui.separator();
+                                monospace_wrap(ui, format!("tool_dia_pix={}", self.tool_dia_pix));
+
+                                if !self.hover_text.is_empty() {
+                                    ui.separator();
+                                    monospace_wrap(ui, self.hover_text.clone());
+                                }
+                            });
+                        });
                 });
 
                 let w = self.sim.w;

@@ -53,7 +53,7 @@
 					"column": 0
 				},
 				{
-					"line": 447,
+					"line": -1,
 					"column": 0
 				},
 				{
@@ -61,8 +61,53 @@
 					"column": 0
 				},
 				{
-					"line": 1199,
+					"line": 999,
 					"column": 30
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				}
+			]
+		},
+		{
+			"path": "src/main.rs",
+			"bookmarks": [
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": 330,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
 				},
 				{
 					"line": -1,
