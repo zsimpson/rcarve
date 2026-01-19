@@ -2,38 +2,84 @@ use crate::im::{Im1Mut, Lum16Im};
 use crate::toolpath::{CutPixels, IV3, ToolPath};
 use std::collections::{BTreeSet, HashMap};
 
-/// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
-/// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
+trait CapsulePixelOp {
+    #[inline(always)]
+    fn observe(&mut self, _v: u16) {}
 
-/// Return a list of signed pixel indices that form a circular shape centered at (0,0) given the stride .
-pub fn circle_pixel_iz(radius_pix: usize, stride: usize) -> Vec<isize> {
-    let mut pixel_iz = Vec::new();
-    let r = radius_pix as isize;
-    let r_sq = r * r;
-    let s_isize = stride as isize;
-    for y in -r..=r {
-        for x in -r..=r {
-            if x * x + y * y <= r_sq {
-                let iz = y * s_isize + x;
-                pixel_iz.push(iz);
+    #[inline(always)]
+    fn update(&mut self, old: u16, _z: u16) -> u16 {
+        old
+    }
+}
+
+struct DepthWriteOp<'a> {
+    cut: &'a mut CutPixels,
+}
+
+impl CapsulePixelOp for DepthWriteOp<'_> {
+    #[inline(always)]
+    fn update(&mut self, old: u16, z: u16) -> u16 {
+        debug_assert!(z <= old || z >= old);
+        if z < old {
+            self.cut.add_pixel_change(old, z);
+            z
+        } else {
+            old
+        }
+    }
+}
+
+#[derive(Default)]
+struct MaxReadOp {
+    max: u16,
+}
+
+impl CapsulePixelOp for MaxReadOp {
+    #[inline(always)]
+    fn observe(&mut self, v: u16) {
+        if v > self.max {
+            self.max = v;
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn capsule_touch_pixel<const WRITE: bool, O: CapsulePixelOp>(
+    arr_ptr: *mut u16,
+    i: usize,
+    z: u16,
+    op: &mut O,
+) {
+    let p = unsafe { arr_ptr.add(i) };
+    let old = unsafe { p.read() };
+    op.observe(old);
+    if WRITE {
+        let new = op.update(old, z);
+        if new != old {
+            unsafe {
+                p.write(new);
             }
         }
     }
-    pixel_iz
 }
 
-pub fn splat_pixel_iz_no_bounds(
+#[inline(always)]
+fn use_bounded_for_segment(im: &Lum16Im, p0: IV3, p1: IV3, radius_pix: usize) -> bool {
+    point_near_bounds(p0, radius_pix, im.w, im.h) || point_near_bounds(p1, radius_pix, im.w, im.h)
+}
+
+fn splat_pixel_iz_no_bounds_op<const WRITE: bool, O: CapsulePixelOp>(
     cen_x: usize,
     cen_y: usize,
-    im: &mut Lum16Im,
+    stride: usize,
+    arr_ptr: *mut u16,
+    arr_len: usize,
     z: u16,
     pixel_iz: &[isize],
-    cut: &mut CutPixels,
+    op: &mut O,
 ) {
-    let stride = im.s;
     let center_i = (cen_y * stride + cen_x) as isize;
-    let arr = im.arr_mut();
-    let len_i = arr.len() as isize;
+    let len_i = arr_len as isize;
 
     for &di in pixel_iz {
         let i = center_i + di;
@@ -47,33 +93,28 @@ pub fn splat_pixel_iz_no_bounds(
         );
 
         unsafe {
-            let p = arr.get_unchecked_mut(i as usize);
-            if z < *p {
-                cut.add_pixel_change(*p, z);
-                *p = z;
-            }
+            capsule_touch_pixel::<WRITE, _>(arr_ptr, i as usize, z, op);
         }
     }
 }
 
-pub fn splat_pixel_iz_bounded(
+fn splat_pixel_iz_bounded_op<const WRITE: bool, O: CapsulePixelOp>(
     cen_x: usize,
     cen_y: usize,
-    im: &mut Lum16Im,
+    w_usize: usize,
+    h_usize: usize,
+    stride: usize,
+    arr_ptr: *mut u16,
     z: u16,
     radius_pix: usize,
     pixel_iz: &[isize],
-    cut: &mut CutPixels,
+    op: &mut O,
 ) {
-    let stride = im.s;
-    let w_usize = im.w;
-    let h_usize = im.h;
     let w = w_usize as isize;
     let h = h_usize as isize;
     let cen_x_i = cen_x as isize;
     let cen_y_i = cen_y as isize;
     let r = radius_pix as isize;
-    let arr = im.arr_mut();
 
     for &di in pixel_iz {
         // `di` was constructed as: di = dy * stride + dx, with dx,dy in [-radius_pix, radius_pix].
@@ -97,25 +138,20 @@ pub fn splat_pixel_iz_bounded(
         }
 
         let i = (y as usize) * w_usize + (x as usize);
-
         unsafe {
-            let p = arr.get_unchecked_mut(i);
-            if z < *p {
-                cut.add_pixel_change(*p, z);
-                *p = z;
-            }
+            capsule_touch_pixel::<WRITE, _>(arr_ptr, i, z, op);
         }
     }
 }
 
-/// Render a triangle into im at a single Z height, without bounds checking.
-pub fn triangle_no_bounds_single_z(
+fn triangle_no_bounds_single_z_op<const WRITE: bool, O: CapsulePixelOp>(
     a: (isize, isize),
     b: (isize, isize),
     c: (isize, isize),
-    im: &mut Lum16Im,
+    stride: usize,
+    arr_ptr: *mut u16,
     z: u16,
-    cut: &mut CutPixels,
+    op: &mut O,
 ) {
     #[inline(always)]
     fn edge_setup(x0: i64, y0: i64, x1: i64, y1: i64, y_start: i64) -> (i64, i64) {
@@ -132,14 +168,14 @@ pub fn triangle_no_bounds_single_z(
     }
 
     #[inline(always)]
-    fn draw_span_no_bounds_single_z(
-        arr: &mut [u16],
+    fn draw_span_no_bounds_single_z<const WRITE: bool, O: CapsulePixelOp>(
         stride: usize,
         y: usize,
         x0_fp: i64,
         x1_fp: i64,
         z: u16,
-        cut: &mut CutPixels,
+        arr_ptr: *mut u16,
+        op: &mut O,
     ) {
         let (mut left_fp, mut right_fp) = (x0_fp, x1_fp);
         if left_fp > right_fp {
@@ -160,18 +196,11 @@ pub fn triangle_no_bounds_single_z(
         let end_i = row_start + (xr as usize);
         while i <= end_i {
             unsafe {
-                let p = arr.get_unchecked_mut(i);
-                if z < *p {
-                    cut.add_pixel_change(*p, z);
-                    *p = z;
-                }
+                capsule_touch_pixel::<WRITE, _>(arr_ptr, i, z, op);
             }
             i += 1;
         }
     }
-
-    let stride = im.s;
-    let arr = im.arr_mut();
 
     // Sort vertices by y, then by x for stability.
     let mut v = [a, b, c];
@@ -186,7 +215,15 @@ pub fn triangle_no_bounds_single_z(
         let y = y0 as usize;
         let min_x = x0.min(x1).min(x2);
         let max_x = x0.max(x1).max(x2);
-        draw_span_no_bounds_single_z(arr, stride, y, min_x << 16, max_x << 16, z, cut);
+        draw_span_no_bounds_single_z::<WRITE, _>(
+            stride,
+            y,
+            min_x << 16,
+            max_x << 16,
+            z,
+            arr_ptr,
+            op,
+        );
         return;
     }
 
@@ -214,7 +251,15 @@ pub fn triangle_no_bounds_single_z(
 
         let mut y = y0;
         while y < y1 {
-            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z, cut);
+            draw_span_no_bounds_single_z::<WRITE, _>(
+                stride,
+                y as usize,
+                x_left_fp,
+                x_right_fp,
+                z,
+                arr_ptr,
+                op,
+            );
             x_left_fp += left_step_fp;
             x_right_fp += right_step_fp;
             y += 1;
@@ -234,7 +279,15 @@ pub fn triangle_no_bounds_single_z(
 
         let mut y = y1;
         while y <= y2 {
-            draw_span_no_bounds_single_z(arr, stride, y as usize, x_left_fp, x_right_fp, z, cut);
+            draw_span_no_bounds_single_z::<WRITE, _>(
+                stride,
+                y as usize,
+                x_left_fp,
+                x_right_fp,
+                z,
+                arr_ptr,
+                op,
+            );
             x_left_fp += left_step_fp;
             x_right_fp += right_step_fp;
             y += 1;
@@ -242,16 +295,16 @@ pub fn triangle_no_bounds_single_z(
     }
 }
 
-/// Render a triangle into im at a single Z height, clipping spans to image bounds.
-///
-/// This is a scanline rasterizer: it walks y from ymin..ymax and fills contiguous x spans.
-pub fn triangle_with_bounds_single_z(
+fn triangle_with_bounds_single_z_op<const WRITE: bool, O: CapsulePixelOp>(
     a: (isize, isize),
     b: (isize, isize),
     c: (isize, isize),
-    im: &mut Lum16Im,
+    w_usize: usize,
+    h_usize: usize,
+    stride: usize,
+    arr_ptr: *mut u16,
     z: u16,
-    cut: &mut CutPixels,
+    op: &mut O,
 ) {
     #[inline(always)]
     fn edge_setup(x0: i64, y0: i64, x1: i64, y1: i64, y_start: i64) -> (i64, i64) {
@@ -268,15 +321,15 @@ pub fn triangle_with_bounds_single_z(
     }
 
     #[inline(always)]
-    fn draw_span_bounded_single_z(
-        arr: &mut [u16],
+    fn draw_span_bounded_single_z<const WRITE: bool, O: CapsulePixelOp>(
         stride: usize,
         y: usize,
         w: i64,
         x0_fp: i64,
         x1_fp: i64,
         z: u16,
-        cut: &mut CutPixels,
+        arr_ptr: *mut u16,
+        op: &mut O,
     ) {
         let (mut left_fp, mut right_fp) = (x0_fp, x1_fp);
         if left_fp > right_fp {
@@ -309,24 +362,17 @@ pub fn triangle_with_bounds_single_z(
         let end_i = row_start + (xr as usize);
         while i <= end_i {
             unsafe {
-                let p = arr.get_unchecked_mut(i);
-                if z < *p {
-                    cut.add_pixel_change(*p, z);
-                    *p = z;
-                }
+                capsule_touch_pixel::<WRITE, _>(arr_ptr, i, z, op);
             }
             i += 1;
         }
     }
 
-    let w = im.w as i64;
-    let h = im.h as i64;
+    let w = w_usize as i64;
+    let h = h_usize as i64;
     if w <= 0 || h <= 0 {
         return;
     }
-
-    let stride = im.s;
-    let arr = im.arr_mut();
 
     // Sort vertices by y, then by x for stability.
     let mut v = [a, b, c];
@@ -344,7 +390,16 @@ pub fn triangle_with_bounds_single_z(
         let y = y0 as usize;
         let min_x = x0.min(x1).min(x2);
         let max_x = x0.max(x1).max(x2);
-        draw_span_bounded_single_z(arr, stride, y, w, min_x << 16, max_x << 16, z, cut);
+        draw_span_bounded_single_z::<WRITE, _>(
+            stride,
+            y,
+            w,
+            min_x << 16,
+            max_x << 16,
+            z,
+            arr_ptr,
+            op,
+        );
         return;
     }
 
@@ -374,8 +429,15 @@ pub fn triangle_with_bounds_single_z(
 
             let mut y = y_start;
             while y < y_end_excl {
-                draw_span_bounded_single_z(
-                    arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut,
+                draw_span_bounded_single_z::<WRITE, _>(
+                    stride,
+                    y as usize,
+                    w,
+                    x_left_fp,
+                    x_right_fp,
+                    z,
+                    arr_ptr,
+                    op,
                 );
                 x_left_fp += left_step_fp;
                 x_right_fp += right_step_fp;
@@ -400,8 +462,15 @@ pub fn triangle_with_bounds_single_z(
 
             let mut y = y_start;
             while y <= y_end_incl {
-                draw_span_bounded_single_z(
-                    arr, stride, y as usize, w, x_left_fp, x_right_fp, z, cut,
+                draw_span_bounded_single_z::<WRITE, _>(
+                    stride,
+                    y as usize,
+                    w,
+                    x_left_fp,
+                    x_right_fp,
+                    z,
+                    arr_ptr,
+                    op,
                 );
                 x_left_fp += left_step_fp;
                 x_right_fp += right_step_fp;
@@ -409,6 +478,118 @@ pub fn triangle_with_bounds_single_z(
             }
         }
     }
+}
+
+/// The goal of this module is to simulate the effect of toolpaths on a heightmap image.
+/// The toolpaths are assumed in the correct order. The Toolpaths are in pixel X/Y and thou Z.
+
+/// Return a list of signed pixel indices that form a circular shape centered at (0,0) given the stride .
+pub fn circle_pixel_iz(radius_pix: usize, stride: usize) -> Vec<isize> {
+    let mut pixel_iz = Vec::new();
+    let r = radius_pix as isize;
+    let r_sq = r * r;
+    let s_isize = stride as isize;
+    for y in -r..=r {
+        for x in -r..=r {
+            if x * x + y * y <= r_sq {
+                let iz = y * s_isize + x;
+                pixel_iz.push(iz);
+            }
+        }
+    }
+    pixel_iz
+}
+
+pub fn splat_pixel_iz_no_bounds(
+    cen_x: usize,
+    cen_y: usize,
+    im: &mut Lum16Im,
+    z: u16,
+    pixel_iz: &[isize],
+    cut: &mut CutPixels,
+) {
+    let stride = im.s;
+    let arr = im.arr_mut();
+    let arr_ptr = arr.as_mut_ptr();
+    let arr_len = arr.len();
+    let mut op = DepthWriteOp { cut };
+    splat_pixel_iz_no_bounds_op::<true, _>(
+        cen_x,
+        cen_y,
+        stride,
+        arr_ptr,
+        arr_len,
+        z,
+        pixel_iz,
+        &mut op,
+    );
+}
+
+pub fn splat_pixel_iz_bounded(
+    cen_x: usize,
+    cen_y: usize,
+    im: &mut Lum16Im,
+    z: u16,
+    radius_pix: usize,
+    pixel_iz: &[isize],
+    cut: &mut CutPixels,
+) {
+    let stride = im.s;
+    let w_usize = im.w;
+    let h_usize = im.h;
+    let arr = im.arr_mut();
+    let arr_ptr = arr.as_mut_ptr();
+    let mut op = DepthWriteOp { cut };
+    splat_pixel_iz_bounded_op::<true, _>(
+        cen_x,
+        cen_y,
+        w_usize,
+        h_usize,
+        stride,
+        arr_ptr,
+        z,
+        radius_pix,
+        pixel_iz,
+        &mut op,
+    );
+}
+
+/// Render a triangle into im at a single Z height, without bounds checking.
+pub fn triangle_no_bounds_single_z(
+    a: (isize, isize),
+    b: (isize, isize),
+    c: (isize, isize),
+    im: &mut Lum16Im,
+    z: u16,
+    cut: &mut CutPixels,
+) {
+    let stride = im.s;
+    let arr = im.arr_mut();
+    let arr_ptr = arr.as_mut_ptr();
+    let mut op = DepthWriteOp { cut };
+    triangle_no_bounds_single_z_op::<true, _>(a, b, c, stride, arr_ptr, z, &mut op);
+}
+
+/// Render a triangle into im at a single Z height, clipping spans to image bounds.
+///
+/// This is a scanline rasterizer: it walks y from ymin..ymax and fills contiguous x spans.
+pub fn triangle_with_bounds_single_z(
+    a: (isize, isize),
+    b: (isize, isize),
+    c: (isize, isize),
+    im: &mut Lum16Im,
+    z: u16,
+    cut: &mut CutPixels,
+) {
+    let stride = im.s;
+    let w_usize = im.w;
+    let h_usize = im.h;
+    let arr = im.arr_mut();
+    let arr_ptr = arr.as_mut_ptr();
+    let mut op = DepthWriteOp { cut };
+    triangle_with_bounds_single_z_op::<true, _>(
+        a, b, c, w_usize, h_usize, stride, arr_ptr, z, &mut op,
+    );
 }
 
 #[inline]
@@ -437,8 +618,7 @@ pub fn draw_toolpath_segment_single_depth(
     // let mut q0 = p0;
     // let mut q1 = p1;
 
-    let use_bounded = point_near_bounds(p0, radius_pix, im.w, im.h)
-        || point_near_bounds(p1, radius_pix, im.w, im.h);
+    let use_bounded = use_bounded_for_segment(im, p0, p1, radius_pix);
 
     let rf = radius_pix as f64;
 
@@ -463,12 +643,172 @@ pub fn draw_toolpath_segment_single_depth(
     let c = ((p1x + qx).round() as isize, (p1y + qy).round() as isize);
     let d = ((p1x - qx).round() as isize, (p1y - qy).round() as isize);
 
+    {
+        let stride = im.s;
+        let w_usize = im.w;
+        let h_usize = im.h;
+        let arr = im.arr_mut();
+        let arr_ptr = arr.as_mut_ptr();
+        let arr_len = arr.len();
+        let mut op = DepthWriteOp { cut: &mut cut };
+
+        if use_bounded {
+            triangle_with_bounds_single_z_op::<true, _>(
+                a, b, c, w_usize, h_usize, stride, arr_ptr, z_u16, &mut op,
+            );
+            triangle_with_bounds_single_z_op::<true, _>(
+                a, c, d, w_usize, h_usize, stride, arr_ptr, z_u16, &mut op,
+            );
+        } else {
+            triangle_no_bounds_single_z_op::<true, _>(a, b, c, stride, arr_ptr, z_u16, &mut op);
+            triangle_no_bounds_single_z_op::<true, _>(a, c, d, stride, arr_ptr, z_u16, &mut op);
+        }
+
+    let p0x_usize = p0.x as usize;
+    let p0y_usize = p0.y as usize;
+    let p1x_usize = p1.x as usize;
+    let p1y_usize = p1.y as usize;
+
+        if use_bounded {
+            splat_pixel_iz_bounded_op::<true, _>(
+                p0x_usize,
+                p0y_usize,
+                w_usize,
+                h_usize,
+                stride,
+                arr_ptr,
+                z_u16,
+                radius_pix,
+                circle_pixel_iz,
+                &mut op,
+            );
+        } else {
+            splat_pixel_iz_no_bounds_op::<true, _>(
+                p0x_usize,
+                p0y_usize,
+                stride,
+                arr_ptr,
+                arr_len,
+                z_u16,
+                circle_pixel_iz,
+                &mut op,
+            );
+        }
+
+        if use_bounded {
+            splat_pixel_iz_bounded_op::<true, _>(
+                p1x_usize,
+                p1y_usize,
+                w_usize,
+                h_usize,
+                stride,
+                arr_ptr,
+                z_u16,
+                radius_pix,
+                circle_pixel_iz,
+                &mut op,
+            );
+        } else {
+            splat_pixel_iz_no_bounds_op::<true, _>(
+                p1x_usize,
+                p1y_usize,
+                stride,
+                arr_ptr,
+                arr_len,
+                z_u16,
+                circle_pixel_iz,
+                &mut op,
+            );
+        }
+    }
+
+    cut
+}
+
+/// Scan the same capsule footprint as `draw_toolpath_segment_single_depth`, but instead of
+/// modifying the image, return the maximum `u16` value observed anywhere inside the capsule.
+///
+/// This is useful for traversal planning: the returned value is the highest (least-cut) pixel
+/// under the tool along the segment, so you can retract above it.
+pub fn scan_toolpath_segment_max_u16(
+    im: &Lum16Im,
+    p0: IV3,
+    p1: IV3,
+    radius_pix: usize,
+    circle_pixel_iz: &[isize],
+) -> u16 {
+    let stride = im.s;
+    let w_usize = im.w;
+    let h_usize = im.h;
+    let arr_ptr = im.arr.as_ptr() as *mut u16;
+    let arr_len = im.arr.len();
+
+    let use_bounded = use_bounded_for_segment(im, p0, p1, radius_pix);
+
+    let rf = radius_pix as f64;
+    let p0x = p0.x as f64;
+    let p0y = p0.y as f64;
+    let p1x = p1.x as f64;
+    let p1y = p1.y as f64;
+
+    let px = p0x - p1x;
+    let py = p0y - p1y;
+    let p_mag = (px * px + py * py).sqrt();
+
+    let mut op = MaxReadOp::default();
+
+    // Degenerate: treat as a stationary tool footprint (a single circle at p0).
+    if p_mag == 0.0 {
+        let cx = p0.x.max(0) as usize;
+        let cy = p0.y.max(0) as usize;
+        if use_bounded {
+            splat_pixel_iz_bounded_op::<false, _>(
+                cx,
+                cy,
+                w_usize,
+                h_usize,
+                stride,
+                arr_ptr,
+                0,
+                radius_pix,
+                circle_pixel_iz,
+                &mut op,
+            );
+        } else {
+            splat_pixel_iz_no_bounds_op::<false, _>(
+                cx,
+                cy,
+                stride,
+                arr_ptr,
+                arr_len,
+                0,
+                circle_pixel_iz,
+                &mut op,
+            );
+        }
+        return op.max;
+    }
+
+    let nx = px / p_mag;
+    let ny = py / p_mag;
+    let qx = -ny * rf;
+    let qy = nx * rf;
+
+    let a = ((p0x - qx).round() as isize, (p0y - qy).round() as isize);
+    let b = ((p0x + qx).round() as isize, (p0y + qy).round() as isize);
+    let c = ((p1x + qx).round() as isize, (p1y + qy).round() as isize);
+    let d = ((p1x - qx).round() as isize, (p1y - qy).round() as isize);
+
     if use_bounded {
-        triangle_with_bounds_single_z(a, b, c, im, z_u16, &mut cut);
-        triangle_with_bounds_single_z(a, c, d, im, z_u16, &mut cut);
+        triangle_with_bounds_single_z_op::<false, _>(
+            a, b, c, w_usize, h_usize, stride, arr_ptr, 0, &mut op,
+        );
+        triangle_with_bounds_single_z_op::<false, _>(
+            a, c, d, w_usize, h_usize, stride, arr_ptr, 0, &mut op,
+        );
     } else {
-        triangle_no_bounds_single_z(a, b, c, im, z_u16, &mut cut);
-        triangle_no_bounds_single_z(a, c, d, im, z_u16, &mut cut);
+        triangle_no_bounds_single_z_op::<false, _>(a, b, c, stride, arr_ptr, 0, &mut op);
+        triangle_no_bounds_single_z_op::<false, _>(a, c, d, stride, arr_ptr, 0, &mut op);
     }
 
     let p0x_usize = p0.x as usize;
@@ -477,40 +817,76 @@ pub fn draw_toolpath_segment_single_depth(
     let p1y_usize = p1.y as usize;
 
     if use_bounded {
-        splat_pixel_iz_bounded(
+        splat_pixel_iz_bounded_op::<false, _>(
             p0x_usize,
             p0y_usize,
-            im,
-            z_u16,
+            w_usize,
+            h_usize,
+            stride,
+            arr_ptr,
+            0,
             radius_pix,
-            &circle_pixel_iz,
-            &mut cut,
+            circle_pixel_iz,
+            &mut op,
         );
-    } else {
-        splat_pixel_iz_no_bounds(p0x_usize, p0y_usize, im, z_u16, &circle_pixel_iz, &mut cut);
-    }
-
-    if use_bounded {
-        splat_pixel_iz_bounded(
+        splat_pixel_iz_bounded_op::<false, _>(
             p1x_usize,
             p1y_usize,
-            im,
-            z_u16,
+            w_usize,
+            h_usize,
+            stride,
+            arr_ptr,
+            0,
             radius_pix,
-            &circle_pixel_iz,
-            &mut cut,
+            circle_pixel_iz,
+            &mut op,
         );
     } else {
-        splat_pixel_iz_no_bounds(p1x_usize, p1y_usize, im, z_u16, &circle_pixel_iz, &mut cut);
+        splat_pixel_iz_no_bounds_op::<false, _>(
+            p0x_usize,
+            p0y_usize,
+            stride,
+            arr_ptr,
+            arr_len,
+            0,
+            circle_pixel_iz,
+            &mut op,
+        );
+        splat_pixel_iz_no_bounds_op::<false, _>(
+            p1x_usize,
+            p1y_usize,
+            stride,
+            arr_ptr,
+            arr_len,
+            0,
+            circle_pixel_iz,
+            &mut op,
+        );
     }
 
-    cut
+    op.max
 }
 
 /// Simulate toolpaths into a `Lum16Im` representing the result.
 /// Toolpath points are in pixel X/Y and thou Z, and are assumed to already be ordered.
 /// The toolpaths are mutable because the cut annotations will be recorded into them.
-pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath]) {
+///
+/// If `on_step` is provided, it will be called after each segment is applied, with a read-only
+/// view of the current `im` state.
+pub type SimToolpathsStepCallback<'a> = dyn FnMut(
+        &Lum16Im,
+        usize, /*toolpath_i*/
+        usize, /*seg_i*/
+        IV3,   /*p0*/
+        IV3,   /*p1*/
+        CutPixels,
+    ) + 'a;
+
+pub fn sim_toolpaths(
+    im: &mut Lum16Im,
+    toolpaths: &mut [ToolPath],
+    mut on_step: Option<&mut SimToolpathsStepCallback<'_>>,
+) {
     if toolpaths.is_empty() {
         return;
     }
@@ -530,7 +906,7 @@ pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath]) {
             .or_insert_with(|| circle_pixel_iz(radius_pix, im.s));
     }
 
-    for toolpath in toolpaths.iter_mut() {
+    for (toolpath_i, toolpath) in toolpaths.iter_mut().enumerate() {
         // Ensure `cuts` is parallel to `points`.
         if toolpath.cuts.len() != toolpath.points.len() {
             toolpath.cuts = vec![CutPixels::default(); toolpath.points.len()];
@@ -550,10 +926,28 @@ pub fn sim_toolpaths(im: &mut Lum16Im, toolpaths: &mut [ToolPath]) {
             let p0 = seg[0];
             let p1 = seg[1];
 
+            // Traverses / retracts may include Z-changing segments; the existing simulation model
+            // only supports constant-Z segments. Treat Z-changing segments as non-cutting moves.
+            if p0.z != p1.z {
+                let seg_cut = CutPixels::default();
+                if seg_i < toolpath.cuts.len() {
+                    toolpath.cuts[seg_i] = seg_cut;
+                }
+
+                if let Some(cb) = on_step.as_deref_mut() {
+                    cb(&*im, toolpath_i, seg_i, p0, p1, seg_cut);
+                }
+                continue;
+            }
+
             let seg_cut =
                 draw_toolpath_segment_single_depth(im, p0, p1, tool_radius_pix, circle_pixel_iz);
             if seg_i < toolpath.cuts.len() {
                 toolpath.cuts[seg_i] = seg_cut;
+            }
+
+            if let Some(cb) = on_step.as_deref_mut() {
+                cb(&*im, toolpath_i, seg_i, p0, p1, seg_cut);
             }
         }
 

@@ -4,7 +4,7 @@ use rcarve::im::Lum16Im;
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::region_tree;
 use rcarve::sim::sim_toolpaths;
-use rcarve::toolpath::{break_long_toolpaths, create_toolpaths_from_region_tree, sort_toolpaths, cull_empty_toolpaths};
+use rcarve::toolpath;
 // use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
 
 #[allow(dead_code)]
@@ -238,7 +238,7 @@ fn main() {
         let rough_pride_thou = Thou(0);
         let rough_perimeter_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
 
-        let mut rough_toolpaths = create_toolpaths_from_region_tree(
+        let mut rough_toolpaths = toolpath::create_toolpaths_from_region_tree(
             "rough",
             &rough_region_root,
             &rough_cut_bands,
@@ -256,8 +256,16 @@ fn main() {
             None,
         );
 
-        sort_toolpaths(&mut rough_toolpaths, &rough_region_root);
-        break_long_toolpaths(&mut rough_toolpaths, max_segment_len_pix);
+        toolpath::sort_toolpaths(&mut rough_toolpaths, &rough_region_root);
+        toolpath::break_long_toolpaths(&mut rough_toolpaths, max_segment_len_pix);
+
+        let mut rough_sim_im = before_sim_im.clone();
+        sim_toolpaths(&mut rough_sim_im, &mut rough_toolpaths, None);
+        toolpath::cull_empty_toolpaths(&mut rough_toolpaths);
+
+        let mut rough_traverse_sim_im = before_sim_im.clone();
+        toolpath::add_traverse_toolpaths(&mut rough_traverse_sim_im, &mut rough_toolpaths);
+
         rough_toolpaths
     };
 
@@ -295,7 +303,7 @@ fn main() {
         // the rough to refine tool diameters.
         let n_perimeters = 2;
 
-        let mut refine_toolpaths = create_toolpaths_from_region_tree(
+        let mut refine_toolpaths = toolpath::create_toolpaths_from_region_tree(
             "refine",
             &refine_region_root,
             &refine_cut_bands,
@@ -313,8 +321,16 @@ fn main() {
             None,
         );
 
-        sort_toolpaths(&mut refine_toolpaths, &refine_region_root);
-        break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
+        toolpath::sort_toolpaths(&mut refine_toolpaths, &refine_region_root);
+        toolpath::break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
+
+        let mut refine_sim_im = before_sim_im.clone();
+        sim_toolpaths(&mut refine_sim_im, &mut refine_toolpaths, None);
+        toolpath::cull_empty_toolpaths(&mut refine_toolpaths);
+
+        let mut refine_traverse_sim_im = before_sim_im.clone();
+        toolpath::add_traverse_toolpaths(&mut refine_traverse_sim_im, &mut refine_toolpaths);
+
         refine_toolpaths
     };
 
@@ -323,8 +339,10 @@ fn main() {
 
     // The toolspaths need to be mutable because the the sim function
     // annotates them with cut information.
-    sim_toolpaths(&mut sim_im, &mut all_toolpaths);
-    cull_empty_toolpaths(&mut all_toolpaths);
+    // sim_toolpaths(&mut sim_im, &mut all_toolpaths, None);
+    // toolpath::cull_empty_toolpaths(&mut all_toolpaths);
+
+    // toolpath::add_traverse_toolpaths(&before_sim_im, &mut all_toolpaths);
 
     debug_ui::add_lum16("sim_after", &sim_im);
     debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths, 20);

@@ -811,7 +811,7 @@ mod imp {
             if self.applied_count > 0 {
                 let n = self.applied_count.min(self.movie_toolpaths.len());
                 if n > 0 {
-                    crate::sim::sim_toolpaths(&mut self.sim, &mut self.movie_toolpaths[..n]);
+                    crate::sim::sim_toolpaths(&mut self.sim, &mut self.movie_toolpaths[..n], None);
                 }
             }
         }
@@ -1022,6 +1022,12 @@ mod imp {
 
                                         if let Some(tp) = self.movie_toolpaths.get(i) {
                                             ui.separator();
+                                            monospace_wrap(
+                                                ui,
+                                                format!("is_traverse={}", tp.is_traverse),
+                                            );
+
+                                            ui.separator();
                                             let mut cut_pixels: u64 = 0;
                                             let mut cut_depth_sum_thou: u64 = 0;
                                             for c in tp.cuts.iter() {
@@ -1082,7 +1088,11 @@ mod imp {
                                 ));
                             }
 
-                            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 40, 40));
+                            let stroke = if tp.is_traverse {
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(240, 200, 40))
+                            } else {
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 40, 40))
+                            };
                             painter.add(egui::Shape::line(pts.clone(), stroke));
 
                             if let (Some(start), Some(end)) = (pts.first().copied(), pts.last().copied()) {

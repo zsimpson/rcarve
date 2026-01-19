@@ -7,6 +7,7 @@ use crate::im::label::{LabelInfo, ROI};
 use crate::im::{Im, MaskIm};
 use crate::region_tree::{CutBand, PlyIm, RegionI, RegionIm, RegionNode, RegionRoot};
 use crate::trace::{Contour, contours_by_suzuki_abe};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IV3 {
@@ -48,6 +49,7 @@ pub struct ToolPath {
     /// Per-segment cut accounting. `cuts[i]` corresponds to the segment `points[i] -> points[i+1]`.
     /// The last entry is unused (so `cuts.len() == points.len()`).
     pub cuts: Vec<CutPixels>,
+    pub is_traverse: bool,
 }
 
 fn create_perimeter_tool_paths(
@@ -76,6 +78,7 @@ fn create_perimeter_tool_paths(
         tool_i,
         tree_node_id,
         cuts,
+        is_traverse: false,
     }]
 }
 
@@ -198,6 +201,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                     tool_i,
                     tree_node_id,
                     cuts: vec![CutPixels::default(); 2],
+                    is_traverse: false,
                 });
             }
         }
@@ -223,6 +227,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                 tool_i,
                 tree_node_id,
                 cuts: vec![CutPixels::default(); 2],
+                is_traverse: false,
             });
         }
     }
@@ -620,6 +625,8 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
             continue;
         }
 
+        let is_traverse = tp.is_traverse;
+
         let want_closed = tp.closed;
 
         // Normalize closed loops to a ring without a duplicated closing vertex;
@@ -666,6 +673,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
                         cuts: vec![CutPixels::default(); pts_len],
+                        is_traverse,
                     });
                 } else {
                     let pts_len = pts.len();
@@ -676,6 +684,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
                         cuts: vec![CutPixels::default(); pts_len],
+                        is_traverse,
                     });
                 }
             }
@@ -693,6 +702,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                     tool_i: tp.tool_i,
                     tree_node_id: tp.tree_node_id,
                     cuts: vec![CutPixels::default(); 2],
+                    is_traverse,
                 });
                 return;
             }
@@ -718,6 +728,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         tool_i: tp.tool_i,
                         tree_node_id: tp.tree_node_id,
                         cuts: vec![CutPixels::default(); 2],
+                        is_traverse,
                     });
                     prev = next;
                 }
@@ -995,6 +1006,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
         tool_dia_pix: usize,
         tool_i: usize,
         tree_node_id: usize,
+        is_traverse: bool,
     ) -> ToolPath {
         debug_assert!(points.len() >= 2);
         debug_assert_eq!(seg_cuts.len(), points.len().saturating_sub(1));
@@ -1016,6 +1028,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
             tool_i,
             tree_node_id,
             cuts,
+            is_traverse,
         }
     }
 
@@ -1025,6 +1038,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
         tool_dia_pix: usize,
         tool_i: usize,
         tree_node_id: usize,
+        is_traverse: bool,
     ) -> Vec<ToolPath> {
         if points.len() < 2 {
             return Vec::new();
@@ -1053,6 +1067,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                     tool_dia_pix,
                     tool_i,
                     tree_node_id,
+                    is_traverse,
                 ));
             }
         }
@@ -1064,6 +1079,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
+                is_traverse,
             ));
         }
 
@@ -1076,6 +1092,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
         tool_dia_pix: usize,
         tool_i: usize,
         tree_node_id: usize,
+        is_traverse: bool,
     ) -> Vec<ToolPath> {
         // Normalize to an explicitly closed loop (duplicate first point at the end)
         // with `cuts.len() == points.len()`.
@@ -1106,6 +1123,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_i,
                 tree_node_id,
                 cuts: vec![CutPixels::default(); n],
+                is_traverse,
             }];
         }
 
@@ -1135,6 +1153,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_i,
                 tree_node_id,
                 cuts: cuts_in,
+                is_traverse,
             }];
         }
 
@@ -1164,6 +1183,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                     tool_dia_pix,
                     tool_i,
                     tree_node_id,
+                    is_traverse,
                 ));
             }
 
@@ -1177,6 +1197,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
+                is_traverse,
             ));
         }
 
@@ -1192,6 +1213,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
             tool_i,
             tree_node_id,
             cuts,
+            is_traverse,
         } = tp;
 
         if points.len() < 2 {
@@ -1208,6 +1230,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_i,
                 tree_node_id,
                 cuts,
+                is_traverse,
             });
             continue;
         }
@@ -1219,6 +1242,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
+                is_traverse,
             ));
         } else {
             out.extend(cull_open_toolpath(
@@ -1227,12 +1251,190 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 tool_dia_pix,
                 tool_i,
                 tree_node_id,
+                is_traverse,
             ));
         }
     }
 
     *toolpaths = out;
 }
+
+pub fn add_traverse_toolpaths(sim_im: &mut crate::im::Lum16Im, all_toolpaths: &mut Vec<ToolPath>) {
+    if all_toolpaths.len() < 2 {
+        return;
+    }
+
+    // Precompute boundary transitions so we can run simulation with a callback without
+    // borrowing `all_toolpaths` inside the callback.
+    #[derive(Clone, Copy, Debug)]
+    struct Transition {
+        from: IV3,
+        to: IV3,
+        radius_pix: usize,
+        tool_i: usize,
+        tool_dia_pix: usize,
+        tree_node_id: usize,
+    }
+
+    let mut last_seg_i: Vec<Option<usize>> = Vec::with_capacity(all_toolpaths.len());
+    for tp in all_toolpaths.iter() {
+        if tp.points.len() >= 2 {
+            last_seg_i.push(Some(tp.points.len() - 2));
+        } else {
+            last_seg_i.push(None);
+        }
+    }
+
+    let mut transitions: Vec<Option<Transition>> = Vec::with_capacity(all_toolpaths.len() - 1);
+    for i in 0..(all_toolpaths.len() - 1) {
+        let a = &all_toolpaths[i];
+        let b = &all_toolpaths[i + 1];
+        let (Some(from), Some(to)) = (a.points.last().copied(), b.points.first().copied()) else {
+            transitions.push(None);
+            continue;
+        };
+
+        let dia = a.tool_dia_pix.max(b.tool_dia_pix);
+        let radius_pix = dia / 2;
+        transitions.push(Some(Transition {
+            from,
+            to,
+            radius_pix,
+            tool_i: a.tool_i,
+            tool_dia_pix: dia,
+            tree_node_id: a.tree_node_id,
+        }));
+    }
+
+    let mut safe_z_by_transition: Vec<Option<i32>> = vec![None; transitions.len()];
+
+    // Re-simulate from the base image so we can compute traverse heights against the
+    // correct intermediate state after each toolpath.
+
+    let mut circle_lut_by_radius: HashMap<usize, Vec<isize>> = HashMap::new();
+    let mut cb = |im: &crate::im::Lum16Im,
+                  toolpath_i: usize,
+                  seg_i: usize,
+                  _p0: IV3,
+                  p1: IV3,
+                  _seg_cut: CutPixels| {
+        if toolpath_i >= transitions.len() {
+            return;
+        }
+
+        let Some(expected_last_seg) = last_seg_i.get(toolpath_i).and_then(|v| *v) else {
+            return;
+        };
+        if seg_i != expected_last_seg {
+            return;
+        }
+
+        let Some(tr) = transitions[toolpath_i] else {
+            return;
+        };
+
+        // Sanity: ensure we are using the actual end point of this toolpath.
+        let from = IV3 {
+            x: p1.x,
+            y: p1.y,
+            z: tr.from.z,
+        };
+
+        let circle = circle_lut_by_radius
+            .entry(tr.radius_pix)
+            .or_insert_with(|| crate::sim::circle_pixel_iz(tr.radius_pix, im.s));
+
+        let max_u16 = crate::sim::scan_toolpath_segment_max_u16(im, from, tr.to, tr.radius_pix, circle);
+        let max_i32 = max_u16 as i32;
+        let safe = max_i32.max(tr.from.z).max(tr.to.z);
+        safe_z_by_transition[toolpath_i] = Some(safe);
+    };
+
+    crate::sim::sim_toolpaths(sim_im, &mut all_toolpaths[..], Some(&mut cb));
+
+    // Now splice in traversal toolpaths.
+    let mut out: Vec<ToolPath> = Vec::with_capacity(all_toolpaths.len() * 2);
+    for i in 0..all_toolpaths.len() {
+        out.push(all_toolpaths[i].clone());
+
+        if i >= transitions.len() {
+            continue;
+        }
+
+        let Some(tr) = transitions[i] else {
+            continue;
+        };
+        let Some(safe_z) = safe_z_by_transition[i] else {
+            continue;
+        };
+
+        let from = tr.from;
+        let to = tr.to;
+
+        // Build a minimal retract -> traverse -> plunge polyline.
+        let mut pts: Vec<IV3> = Vec::with_capacity(4);
+        pts.push(from);
+
+        // Retract at current XY.
+        if from.z != safe_z {
+            pts.push(IV3 {
+                x: from.x,
+                y: from.y,
+                z: safe_z,
+            });
+        }
+
+        // XY traverse at safe Z.
+        if from.x != to.x || from.y != to.y {
+            // Ensure we are at safe Z before traversing.
+            if pts.last().copied().unwrap_or(from).z != safe_z {
+                pts.push(IV3 {
+                    x: from.x,
+                    y: from.y,
+                    z: safe_z,
+                });
+            }
+            pts.push(IV3 {
+                x: to.x,
+                y: to.y,
+                z: safe_z,
+            });
+        }
+
+        // Ensure we are at target XY before plunging.
+        let last = pts.last().copied().unwrap_or(from);
+        if last.x != to.x || last.y != to.y || last.z != safe_z {
+            pts.push(IV3 {
+                x: to.x,
+                y: to.y,
+                z: safe_z,
+            });
+        }
+
+        // Plunge at target XY.
+        if to.z != safe_z {
+            pts.push(to);
+        }
+
+        pts.dedup();
+        if pts.len() < 2 {
+            continue;
+        }
+
+        out.push(ToolPath {
+            cuts: vec![CutPixels::default(); pts.len()],
+            points: pts,
+            closed: false,
+            tool_dia_pix: tr.tool_dia_pix,
+            tool_i: tr.tool_i,
+            tree_node_id: tr.tree_node_id,
+            is_traverse: true,
+        });
+    }
+
+    *all_toolpaths = out;
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1557,6 +1759,7 @@ mod tests {
                 tool_i: 0,
                 tree_node_id: 0,
                 cuts: vec![CutPixels::default(); 2],
+                is_traverse: false,
             },
             ToolPath {
                 points: vec![IV3 { x: 5, y: 5, z: 0 }, IV3 { x: 6, y: 6, z: 0 }],
@@ -1565,6 +1768,7 @@ mod tests {
                 tool_i: 0,
                 tree_node_id: 0,
                 cuts: vec![CutPixels::default(); 2],
+                is_traverse: false,
             },
         ];
 
@@ -1589,6 +1793,7 @@ mod tests {
             tool_i: 0,
             tree_node_id: 0,
             cuts: vec![CutPixels::default(); 2],
+            is_traverse: false,
         }];
 
         // Even though z jumps, XY distance is 0 so it should not be broken.
@@ -1611,6 +1816,7 @@ mod tests {
             tool_i: 0,
             tree_node_id: 0,
             cuts: vec![CutPixels::default(); 3],
+            is_traverse: false,
         }];
 
         break_long_toolpaths(&mut toolpaths, 10);
@@ -1651,6 +1857,7 @@ mod tests {
             tool_i: 0,
             tree_node_id: 0,
             cuts: vec![cut(5), cut(0), cut(7), CutPixels::default()],
+            is_traverse: false,
         }];
 
         cull_empty_toolpaths(&mut toolpaths);
@@ -1679,6 +1886,7 @@ mod tests {
             tool_i: 0,
             tree_node_id: 0,
             cuts: vec![cut(3), cut(0), cut(4), CutPixels::default()],
+            is_traverse: false,
         }];
 
         cull_empty_toolpaths(&mut toolpaths);
@@ -1838,6 +2046,7 @@ mod tests {
                 tool_i: 0,
                 tree_node_id: some_node_id,
                 cuts: vec![CutPixels::default(); 2],
+                is_traverse: false,
             },
             // Closed path intentionally not rotated.
             ToolPath {
@@ -1852,6 +2061,7 @@ mod tests {
                 tool_i: 0,
                 tree_node_id: some_node_id,
                 cuts: vec![CutPixels::default(); 4],
+                is_traverse: false,
             },
         ];
 
