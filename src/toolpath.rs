@@ -419,10 +419,12 @@ pub fn create_toolpaths_from_region_tree(
             // Dilate the current region into tool-centerable space.
             im_dilate(cut_mask_im, dil_cut_mask_im, dia_pix);
 
-            // debug_ui::add_mask_im(
-            //     &format!("{} dil_cut_mask_im before={} dilation_i={}", name, cut_z_thou.0, dilation_i),
-            //     dil_cut_mask_im,
-            // );
+            // if name == "refine" && dilation_i == 0 {
+            //     debug_ui::add_mask_im(
+            //         &format!("{} dil_cut_mask_im before={} dilation_i={}", name, cut_z_thou.0, dilation_i),
+            //         dil_cut_mask_im,
+            //     );
+            // }
 
             // Subtract dilation above from cut_mask.
             // TODO: Optimize by limiting the dilation to the padded ROI.
@@ -436,10 +438,12 @@ pub fn create_toolpaths_from_region_tree(
                 }
             }
 
-            // debug_ui::add_mask_im(
-            //     &format!("{} dil_cut_mask_im after={} dilation_i={}", name, cut_z_thou.0, dilation_i),
-            //     dil_cut_mask_im,
-            // );
+            if name == "refine" && dilation_i == 0 {
+                debug_ui::add_mask_im(
+                    &format!("{} dil_cut_mask_im after={} dilation_i={}", name, cut_z_thou.0, dilation_i),
+                    dil_cut_mask_im,
+                );
+            }
 
             let mut node_toolpaths: Vec<ToolPath> = Vec::new();
 

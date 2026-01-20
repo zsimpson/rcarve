@@ -133,7 +133,6 @@ mod imp {
         title: String,
         base: Lum16Im,
         toolpaths: Vec<ToolPath>,
-        tool_dia_pix: usize,
     }
 
     #[derive(Clone, Debug)]
@@ -341,13 +340,12 @@ mod imp {
         add_u8_4(title, im);
     }
 
-    pub fn add_toolpath_movie(title: &str, base: &Lum16Im, toolpaths: &[ToolPath], tool_dia_pix: usize) {
+    pub fn add_toolpath_movie(title: &str, base: &Lum16Im, toolpaths: &[ToolPath]) {
         let mut g = global_state().lock().unwrap();
         g.items.push(DebugItemData::ToolpathMovie(DebugToolpathMovieData {
             title: title.to_owned(),
             base: pack_lum16(base),
             toolpaths: toolpaths.to_vec(),
-            tool_dia_pix: tool_dia_pix.max(1),
         }));
     }
 
@@ -387,7 +385,7 @@ mod imp {
     pub fn show_toolpath_movie(base: &Lum16Im, toolpaths: &[ToolPath], title: &str) -> Result<(), String> {
         let base = pack_lum16(base);
         let toolpaths = toolpaths.to_vec();
-        run_single_movie(title, base, toolpaths, 20)
+        run_single_movie(title, base, toolpaths)
     }
 
     // Unified UI
@@ -437,7 +435,6 @@ mod imp {
                         &d.title,
                         d.base,
                         d.toolpaths,
-                        d.tool_dia_pix,
                     ))),
                 }
             }
@@ -718,7 +715,6 @@ mod imp {
         // Inputs
         base: Lum16Im,
         movie_toolpaths: Vec<ToolPath>,
-        tool_dia_pix: usize,
 
         // Movie state
         applied_count: usize,
@@ -737,7 +733,7 @@ mod imp {
     }
 
     impl ToolpathMovieViewer {
-        fn new(title: &str, base: Lum16Im, toolpaths: Vec<ToolPath>, tool_dia_pix: usize) -> Self {
+        fn new(title: &str, base: Lum16Im, toolpaths: Vec<ToolPath>) -> Self {
             let w = base.w;
             let h = base.h;
             let sim = Lum16Im::new(w, h);
@@ -747,7 +743,6 @@ mod imp {
                 title: title.to_owned(),
                 base,
                 movie_toolpaths: toolpaths,
-                tool_dia_pix: tool_dia_pix.max(1),
                 applied_count: 0,
                 sim,
                 rgba,
@@ -756,7 +751,7 @@ mod imp {
                 dirty: true,
                 hover_text: String::new(),
                 cmd: String::new(),
-                status: "cmd: tp <i> | frame <n> | next | prev | first | last | tool <pix> | mul <f32> | reset | help".to_owned(),
+                status: "cmd: tp <i> | frame <n> | next | prev | first | last | mul <f32> | reset | help".to_owned(),
             }
         }
 
@@ -915,22 +910,6 @@ mod imp {
                     self.set_applied_count(self.toolpath_len());
                     self.status = "last".to_owned();
                 }
-                "tool" | "tool_dia" | "tool_dia_pix" => {
-                    if let Some(v) = it.next() {
-                        match v.parse::<usize>() {
-                            Ok(pix) if pix >= 1 => {
-                                self.tool_dia_pix = pix;
-                                self.dirty = true;
-                                self.status = format!("tool_dia_pix set to {pix}");
-                            }
-                            _ => {
-                                self.status = "tool expects a usize >= 1, e.g. `tool 20`".to_owned();
-                            }
-                        }
-                    } else {
-                        self.status = "usage: tool <dia_pix>".to_owned();
-                    }
-                }
                 "mul" => {
                     if let Some(v) = it.next() {
                         match v.parse::<f32>() {
@@ -948,12 +927,11 @@ mod imp {
                 "reset" => {
                     self.params.mul = 1.0;
                     self.set_applied_count(0);
-                    self.tool_dia_pix = 20;
                     self.dirty = true;
                     self.status = "reset".to_owned();
                 }
                 "help" => {
-                    self.status = "cmd: tp <i> | frame <n> | next | prev | first | last | tool <pix> | mul <f32> | reset | help".to_owned();
+                    self.status = "cmd: tp <i> | frame <n> | next | prev | first | last | mul <f32> | reset | help".to_owned();
                 }
                 _ => {
                     self.status = format!("unknown cmd: {cmd} (try `help`)");
@@ -1028,6 +1006,15 @@ mod imp {
                                             );
 
                                             ui.separator();
+                                            monospace_wrap(
+                                                ui,
+                                                format!(
+                                                    "tool_dia_pix={} tool_i={} tree_node_id={}",
+                                                    tp.tool_dia_pix, tp.tool_i, tp.tree_node_id
+                                                ),
+                                            );
+
+                                            ui.separator();
                                             let mut cut_pixels: u64 = 0;
                                             let mut cut_depth_sum_thou: u64 = 0;
                                             for c in tp.cuts.iter() {
@@ -1050,9 +1037,6 @@ mod imp {
 
                                 ui.separator();
                                 monospace_wrap(ui, format!("mul={:.4}", self.params.mul));
-
-                                ui.separator();
-                                monospace_wrap(ui, format!("tool_dia_pix={}", self.tool_dia_pix));
 
                                 if !self.hover_text.is_empty() {
                                     ui.separator();
@@ -1178,7 +1162,7 @@ mod imp {
         }
     }
 
-    fn run_single_movie(title: &str, base: Lum16Im, toolpaths: Vec<ToolPath>, tool_dia_pix: usize) -> Result<(), String> {
+    fn run_single_movie(title: &str, base: Lum16Im, toolpaths: Vec<ToolPath>) -> Result<(), String> {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size(egui::vec2(1200.0, 800.0)),
             ..Default::default()
@@ -1189,7 +1173,7 @@ mod imp {
             options,
             Box::new(move |_cc| {
                 Ok(Box::new(SingleMovieApp {
-                    viewer: ToolpathMovieViewer::new(&title_owned, base.clone(), toolpaths.clone(), tool_dia_pix),
+                    viewer: ToolpathMovieViewer::new(&title_owned, base.clone(), toolpaths.clone()),
                 }))
             }),
         )
@@ -1233,7 +1217,7 @@ mod imp {
     pub fn add_lum16(_title: &str, _im: &Lum16Im) {}
     pub fn add_rgba(_title: &str, _im: &RGBAIm) {}
 
-    pub fn add_toolpath_movie(_title: &str, _base: &Lum16Im, _toolpaths: &[ToolPath], _tool_dia_pix: usize) {}
+    pub fn add_toolpath_movie(_title: &str, _base: &Lum16Im, _toolpaths: &[ToolPath]) {}
 
     pub fn show_u8_1<S>(_im: &Im<u8, 1, S>, _title: &str) -> Result<(), String> {
         Ok(())

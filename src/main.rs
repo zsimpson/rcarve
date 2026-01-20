@@ -46,6 +46,7 @@ const TEST_JSON: &str = r#"
                 "top_thou": 850,
                 "hidden": false,
                 "is_floor": false,
+                "ply_mat": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
                 "mpoly": [
                     {
                         "exterior": [100,100, 400,100, 400,400, 100,400],
@@ -170,7 +171,7 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
     debug_ui::init("rcarve debug");
 
     // Pixels per inch used for conversions between inches and pixels.
-    let ppi: usize = 200_usize;
+    let ppi: usize = 100_usize;
     let w = (roi.r - roi.l) as usize;
     let h = (roi.b - roi.t) as usize;
 
@@ -239,12 +240,14 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
     let bulk_d_inch = comp_desc.dim_desc.bulk_d_inch;
     let bulk_top_thou = Thou((bulk_d_inch * 1000.0).round() as i32);
 
-    let max_segment_len_inch = 1.0_f64;
+    let max_segment_len_inch = 4.0_f64;
     let max_segment_len_pix = ((max_segment_len_inch * ppi as f64).round() as usize).max(1);
 
     let mut sim_im = Lum16Im::new(w, h);
     sim_im.arr.fill(bulk_top_thou.0 as u16);
     let before_sim_im = sim_im.clone();
+
+    // let mut rough_traverse_sim_im = before_sim_im.clone();
 
     // Rough
     let rough_toolpaths = {
@@ -257,12 +260,11 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
             &sorted_ply_descs,
         );
 
-        println!("Rough cut bands:");
-        region_tree::debug_print_cut_bands(&rough_cut_bands);
+        // println!("Rough cut bands:");
+        // region_tree::debug_print_cut_bands(&rough_cut_bands);
 
         let rough_region_root = region_tree::create_region_tree(&rough_cut_bands, &region_infos);
 
-        // TODO un hard-code these and use real tool settings
         let rough_tool_guid = comp_desc
             .carve_desc
             .rough_tool_guid
@@ -296,8 +298,7 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
         toolpath::sort_toolpaths(&mut rough_toolpaths, &rough_region_root);
         toolpath::break_long_toolpaths(&mut rough_toolpaths, max_segment_len_pix);
 
-        let mut rough_sim_im = before_sim_im.clone();
-        sim_toolpaths(&mut rough_sim_im, &mut rough_toolpaths, None);
+        sim_toolpaths(&mut sim_im, &mut rough_toolpaths, None);
         toolpath::cull_empty_toolpaths(&mut rough_toolpaths);
 
         let mut rough_traverse_sim_im = before_sim_im.clone();
@@ -307,6 +308,8 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
     };
 
     println!();
+
+    let mut before_sim_im = sim_im.clone();
 
     // Refine
     let refine_toolpaths = {
@@ -319,8 +322,8 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
             &sorted_ply_descs,
         );
 
-        println!("Refine cut bands:");
-        region_tree::debug_print_cut_bands(&refine_cut_bands);
+        // println!("Refine cut bands:");
+        // region_tree::debug_print_cut_bands(&refine_cut_bands);
 
         let refine_region_root = region_tree::create_region_tree(&refine_cut_bands, &region_infos);
 
@@ -365,8 +368,7 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
         toolpath::sort_toolpaths(&mut refine_toolpaths, &refine_region_root);
         toolpath::break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
 
-        let mut refine_sim_im = before_sim_im.clone();
-        sim_toolpaths(&mut refine_sim_im, &mut refine_toolpaths, None);
+        sim_toolpaths(&mut sim_im, &mut refine_toolpaths, None);
         toolpath::cull_empty_toolpaths(&mut refine_toolpaths);
 
         let mut refine_traverse_sim_im = before_sim_im.clone();
@@ -375,11 +377,16 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
         refine_toolpaths
     };
 
+    debug_ui::add_lum16(
+        "sim_im",
+        &sim_im,
+    );
+    
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
 
-    debug_ui::add_lum16("sim_after", &sim_im);
-    debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths, 20);
+    before_sim_im.arr.fill(bulk_top_thou.0 as u16);
+    debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths);
     debug_ui::show();
 }
 
@@ -388,10 +395,10 @@ fn main() {
     // println!("Parsed CompDesc: {:?}", comp_desc);
 
     let roi = ROI {
-        l: 200,
-        t: 200,
-        r: 800,
-        b: 800,
+        l: 0,
+        t: 0,
+        r: 500,
+        b: 500,
     };
     carve_roi(comp_desc, roi);
 }
