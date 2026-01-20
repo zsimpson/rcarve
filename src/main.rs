@@ -1,11 +1,31 @@
 use rcarve::debug_ui;
-use rcarve::desc::{Guid, PlyDesc, Thou, parse_comp_json};
+use rcarve::desc::{Guid, PlyDesc, Thou, ToolDesc, Units, parse_comp_json};
 use rcarve::im::Lum16Im;
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::region_tree;
 use rcarve::sim::sim_toolpaths;
 use rcarve::toolpath;
-// use rcarve::sim::{circle_pixel_iz, draw_toolpath_single_depth};
+
+fn tool_i_and_dia_pix(tool_descs: &[ToolDesc], tool_guid: &Guid, ppi: usize) -> (usize, usize) {
+    let (tool_i, tool_desc) = tool_descs
+        .iter()
+        .enumerate()
+        .find(|(_, td)| &td.guid == tool_guid)
+        .unwrap_or_else(|| {
+            panic!(
+                "tool_guid {} not found in tool_descs (len={})",
+                tool_guid,
+                tool_descs.len()
+            )
+        });
+
+    let tool_dia_in = match tool_desc.units {
+        Units::Inch => tool_desc.diameter,
+        Units::Mm => tool_desc.diameter / 25.4,
+    };
+    let tool_dia_pix = ((tool_dia_in * ppi as f64).round() as usize).max(1);
+    (tool_i, tool_dia_pix)
+}
 
 #[allow(dead_code)]
 const TEST_JSON: &str = r#"
@@ -13,7 +33,7 @@ const TEST_JSON: &str = r#"
         "version": 3,
         "guid": "JGYYJQBHTX",
         "dim_desc": {
-            "bulk_d_inch": 0.75,
+            "bulk_d_inch": 1.0,
             "bulk_w_inch": 4,
             "bulk_h_inch": 4,
             "padding_inch": 0,
@@ -94,12 +114,6 @@ const TEST_JSON: &str = r#"
                 "is_frame": false
             }
         },
-        "carve_desc": {
-            "grain_y": true,
-            "rough_tool_guid": "EBES3PGSC3",
-            "refine_tool_guid": "W5C7NZWAK4",
-            "detail_tool_guid": null
-        },
         "bands": [
             { "top_thou": 1000, "bot_thou": 800, "cut_pass": "rough" },
             { "top_thou": 800, "bot_thou": 600, "cut_pass": "rough" },
@@ -117,7 +131,36 @@ const TEST_JSON: &str = r#"
             { "top_thou": 300, "bot_thou": 200, "cut_pass": "refine" },
             { "top_thou": 200, "bot_thou": 100, "cut_pass": "refine" },
             { "top_thou": 100, "bot_thou": 0, "cut_pass": "refine" }
-        ]
+        ],
+        "tool_descs": [
+            {
+                "guid": "EBES3PGSC3",
+                "units": "inch",
+                "kind": "endmill",
+                "diameter": 0.25,
+                "length": 0.5
+            },
+            {
+                "guid": "W5C7NZWAK4",
+                "units": "inch",
+                "kind": "endmill",
+                "diameter": 0.125,
+                "length": 0.25
+            },
+            {
+                "guid": "BZ76A81UGA",
+                "units": "inch",
+                "kind": "endmill",
+                "diameter": 0.063,
+                "length": 0.125
+            }
+        ],
+        "carve_desc": {
+            "grain_y": true,
+            "rough_tool_guid": "EBES3PGSC3",
+            "refine_tool_guid": "W5C7NZWAK4",
+            "detail_tool_guid": null
+        }
     }
 "#;
 
@@ -125,6 +168,9 @@ fn main() {
     // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
     // in production builds by disabling the `debug_ui` feature.
     debug_ui::init("rcarve debug");
+
+    // Pixels per inch used for conversions between inches and pixels.
+    let ppi: usize = 200_usize;
 
     let roi_l = 0_usize;
     let roi_t = 0_usize;
@@ -154,12 +200,6 @@ fn main() {
         .collect();
 
     sorted_ply_descs.sort_by(|a, b| a.top_thou.cmp(&b.top_thou));
-
-    // Fiddle with plies for debugging.
-    // Set the ply_mat on every ply
-    for ply_desc in &mut sorted_ply_descs {
-        ply_desc.ply_mat = vec![2.0, 0.0, 0.0, 2.0, 0.0, 0.0];
-    }
 
     // Prepend a dummy ply for background (ply_i = 0).
     // `create_cut_bands` expects this exact shape.
@@ -204,12 +244,11 @@ fn main() {
 
     // debug_ui::add_region_im("region_im", &region_im);
 
-    // TODO: Real tools
-    let tool_i = 0;
-    // TODO use real initial heightmap
-    let bulk_top_thou: Thou = Thou(1000);
-    // TODO convert to a max length into pixels
-    let max_segment_len_pix = 100_usize;
+    let bulk_d_inch = comp_desc.dim_desc.bulk_d_inch;
+    let bulk_top_thou = Thou((bulk_d_inch * 1000.0).round() as i32);
+
+    let max_segment_len_inch = 1.0_f64;
+    let max_segment_len_pix = ((max_segment_len_inch * ppi as f64).round() as usize).max(1);
 
     let mut sim_im = Lum16Im::new(w, h);
     sim_im.arr.fill(bulk_top_thou.0 as u16);
@@ -232,7 +271,13 @@ fn main() {
         let rough_region_root = region_tree::create_region_tree(&rough_cut_bands, &region_infos);
 
         // TODO un hard-code these and use real tool settings
-        let rough_tool_dia_pix = 20_usize;
+        let rough_tool_guid = comp_desc
+            .carve_desc
+            .rough_tool_guid
+            .as_ref()
+            .expect("No rough tool guid in carve_desc");
+        let (rough_tool_i, rough_tool_dia_pix) =
+            tool_i_and_dia_pix(&comp_desc.tool_descs, rough_tool_guid, ppi);
         let rough_step_size_pix = (rough_tool_dia_pix.saturating_mul(4) / 5).max(1);
         let rough_margin_pix = 5_usize;
         let rough_pride_thou = Thou(0);
@@ -242,7 +287,7 @@ fn main() {
             "rough",
             &rough_region_root,
             &rough_cut_bands,
-            tool_i,
+            rough_tool_i,
             rough_tool_dia_pix,
             rough_step_size_pix,
             rough_margin_pix,
@@ -271,8 +316,6 @@ fn main() {
 
     println!();
 
-    // let refine_toolpaths = [];
-
     // Refine
     let refine_toolpaths = {
         let refine_cut_bands = region_tree::create_cut_bands(
@@ -289,7 +332,13 @@ fn main() {
 
         let refine_region_root = region_tree::create_region_tree(&refine_cut_bands, &region_infos);
 
-        let refine_tool_dia_pix = 10_usize;
+        let refine_tool_guid = comp_desc
+            .carve_desc
+            .refine_tool_guid
+            .as_ref()
+            .expect("No refine tool guid in carve_desc");
+        let (refine_tool_i, refine_tool_dia_pix) =
+            tool_i_and_dia_pix(&comp_desc.tool_descs, refine_tool_guid, ppi);
         let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
         let refine_margin_pix = 0_usize;
         let refine_pride_thou = Thou(0);
@@ -307,7 +356,7 @@ fn main() {
             "refine",
             &refine_region_root,
             &refine_cut_bands,
-            tool_i,
+            refine_tool_i,
             refine_tool_dia_pix,
             refine_step_size_pix,
             refine_margin_pix,
@@ -315,7 +364,7 @@ fn main() {
             &ply_im,
             &region_im,
             &region_infos,
-            n_perimeters,  
+            n_perimeters,
             refine_perimeter_step_size_pix,
             false,
             None,
@@ -336,13 +385,6 @@ fn main() {
 
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
-
-    // The toolspaths need to be mutable because the the sim function
-    // annotates them with cut information.
-    // sim_toolpaths(&mut sim_im, &mut all_toolpaths, None);
-    // toolpath::cull_empty_toolpaths(&mut all_toolpaths);
-
-    // toolpath::add_traverse_toolpaths(&before_sim_im, &mut all_toolpaths);
 
     debug_ui::add_lum16("sim_after", &sim_im);
     debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths, 20);

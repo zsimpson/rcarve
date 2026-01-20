@@ -82,46 +82,6 @@ fn create_perimeter_tool_paths(
     }]
 }
 
-// fn repeat_toolpaths(
-//     base_toolpaths: Vec<ToolPath>,
-//     target_z_thou: Thou,
-//     parent_z_thou: Thou,
-//     z_step_thou: Thou,
-// ) -> Vec<ToolPath> {
-//     if base_toolpaths.is_empty() {
-//         return base_toolpaths;
-//     }
-
-//     let target_z = target_z_thou.0;
-//     let step = z_step_thou.0.max(1);
-//     let mut z = parent_z_thou.0.max(target_z);
-//     let next_z = z.saturating_sub(step);
-//     z = if next_z < target_z { target_z } else { next_z };
-
-//     // If parent is already at/below the target, nothing to expand.
-//     if z <= target_z {
-//         return base_toolpaths;
-//     }
-
-//     // Create copies at intermediate Zs, then append the originals (which are at target Z).
-//     let mut out: Vec<ToolPath> = Vec::new();
-//     while z > target_z {
-//         for tp in &base_toolpaths {
-//             let mut tp2 = tp.clone();
-//             for pt in &mut tp2.points {
-//                 pt.z = z;
-//             }
-//             out.push(tp2);
-//         }
-
-//         let next_z = z.saturating_sub(step);
-//         z = if next_z < target_z { target_z } else { next_z };
-//     }
-
-//     out.extend(base_toolpaths);
-//     out
-// }
-
 /// Given a cut mask image (1-channel, 8-bit), generate raster tool paths
 /// that cover all the 'on' pixels in the mask. Starting at the top-left of the ROI,
 /// raster left-to-right, creating a tool path for a contiguous run of 'on' pixels.
@@ -262,7 +222,6 @@ pub fn create_toolpaths_from_region_tree(
     perimeter_step_size_pix: usize,
     gen_surfaces: bool,
     mut on_region_masks: Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
-    // bulk_z_thou: Thou,
 ) -> Vec<ToolPath> {
     let w = region_im.w;
     let h = region_im.h;
@@ -311,7 +270,6 @@ pub fn create_toolpaths_from_region_tree(
         perimeter_step_size_pix: usize,
         gen_surfaces: bool,
         on_region_masks: &mut Option<&mut dyn FnMut(&RegionNode, &ROI, &MaskIm, &MaskIm, &MaskIm)>,
-        // parent_z_thou: Thou,
     ) {
         // TODO: Optimze by clearing on the ROI after the fact
         cut_mask_im.arr.fill(0);
@@ -347,13 +305,11 @@ pub fn create_toolpaths_from_region_tree(
 
         let _is_node_floor = matches!(node, RegionNode::Floor { .. });
 
-        // NOTE: `im_dilate` takes a *diameter* in pixels, but for toolpath planning we usually
-        // think in terms of an expansion *radius*.
         let tool_rad_pix = tool_dia_pix / 2;
         let base_rad_pix = tool_rad_pix + margin_pix;
 
-        // Splat in the current node's regions. For floors there is 1+, for cuts there is 1.
-        // and find the ROI
+        // Splat in the current node's regions.
+        // For floors there is 1+, for cuts there is 1. And find the ROI
         match node {
             RegionNode::Floor {
                 region_iz,
@@ -373,6 +329,7 @@ pub fn create_toolpaths_from_region_tree(
                     let label_info = &region_infos[label_i];
                     roi.union(label_info.roi);
                 }
+
                 // For a floor, the "above" threshold should be derived from the depth we cut
                 // to (the band's bottom). Using `lowest_ply_i_in_band - 1` can underflow to 0
                 // and incorrectly mark essentially the entire ROI as "above".
@@ -403,7 +360,6 @@ pub fn create_toolpaths_from_region_tree(
         // Build the above_mask_im by expanding the ROI and copying any ply pixels that
         // are above the current region's ply threshold.
         // Recall that ply_im is sorted form the bottom; higher ply indices have higher values.
-        //
         // Expand by the maximum radius we will use across perimeter passes so the subtraction is
         // correct for all offsets.
         let n_dilation_passes = n_perimeters.max(1);
@@ -513,7 +469,7 @@ pub fn create_toolpaths_from_region_tree(
                     *dst = if src != 0 { 1 } else { 0 };
                 }
 
-                let tolerance = 1.0; // TODO
+                let tolerance = 1.0;
                 let contours = contours_by_suzuki_abe(&mut cut_mask_im_i32);
                 for contour in contours {
                     let simp_contour = contour.simplify_by_rdp(tolerance);
@@ -528,10 +484,6 @@ pub fn create_toolpaths_from_region_tree(
                 }
             }
 
-            // After generating surface + perimeter toolpaths at the target Z, add repeated passes
-            // at intermediate Z steps down from the parent plane.
-            // let z_step_thou = Thou(50);
-            // let node_toolpaths = repeat_toolpaths(node_toolpaths, z_thou, parent_z_thou, z_step_thou);
             paths.extend(node_toolpaths);
         }
 
@@ -1344,7 +1296,8 @@ pub fn add_traverse_toolpaths(sim_im: &mut crate::im::Lum16Im, all_toolpaths: &m
             .entry(tr.radius_pix)
             .or_insert_with(|| crate::sim::circle_pixel_iz(tr.radius_pix, im.s));
 
-        let max_u16 = crate::sim::scan_toolpath_segment_max_u16(im, from, tr.to, tr.radius_pix, circle);
+        let max_u16 =
+            crate::sim::scan_toolpath_segment_max_u16(im, from, tr.to, tr.radius_pix, circle);
         let max_i32 = max_u16 as i32;
         let safe = max_i32.max(tr.from.z).max(tr.to.z);
         safe_z_by_transition[toolpath_i] = Some(safe);
@@ -1434,7 +1387,6 @@ pub fn add_traverse_toolpaths(sim_im: &mut crate::im::Lum16Im, all_toolpaths: &m
 
     *all_toolpaths = out;
 }
-
 
 #[cfg(test)]
 mod tests {

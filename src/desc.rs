@@ -45,9 +45,20 @@ pub struct CompDesc {
     pub dim_desc: DimDesc,
     pub ply_desc_by_guid: HashMap<Guid, PlyDesc>,
     pub layer_desc_by_guid: HashMap<Guid, LayerDesc>,
+    #[serde(default)]
+    pub tool_descs: Vec<ToolDesc>,
     pub carve_desc: CarveDesc,
     #[serde(default)]
     pub bands: Vec<BandDesc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolDesc {
+    pub guid: Guid,
+    pub units: Units,
+    pub kind: String,
+    pub diameter: f64,
+    pub length: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,8 +140,8 @@ pub struct LayerDesc {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CarveDesc {
     pub grain_y: bool,
-    pub rough_tool_guid: Guid,
-    pub refine_tool_guid: Guid,
+    pub rough_tool_guid: Option<Guid>,
+    pub refine_tool_guid: Option<Guid>,
     pub detail_tool_guid: Option<Guid>,
 }
 
