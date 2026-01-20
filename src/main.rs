@@ -1,7 +1,7 @@
 use rcarve::debug_ui;
-use rcarve::desc::{Guid, PlyDesc, Thou, ToolDesc, Units, parse_comp_json};
+use rcarve::desc::{Guid, PlyDesc, Thou, ToolDesc, Units, parse_comp_json, CompDesc};
 use rcarve::im::Lum16Im;
-use rcarve::im::label::{LabelInfo, label_im};
+use rcarve::im::label::{LabelInfo, label_im, ROI};
 use rcarve::region_tree;
 use rcarve::sim::sim_toolpaths;
 use rcarve::toolpath;
@@ -164,23 +164,15 @@ const TEST_JSON: &str = r#"
     }
 "#;
 
-fn main() {
+fn carve_roi(comp_desc:CompDesc, roi:ROI) {
     // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
     // in production builds by disabling the `debug_ui` feature.
     debug_ui::init("rcarve debug");
 
     // Pixels per inch used for conversions between inches and pixels.
     let ppi: usize = 200_usize;
-
-    let roi_l = 0_usize;
-    let roi_t = 0_usize;
-    let roi_r = 500_usize;
-    let roi_b = 500_usize;
-    let w = (roi_r - roi_l) as usize;
-    let h = (roi_b - roi_t) as usize;
-
-    let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
-    // println!("Parsed CompDesc: {:?}", comp_desc);
+    let w = (roi.r - roi.l) as usize;
+    let h = (roi.b - roi.t) as usize;
 
     // Keep plies that are not hidden (and whose layer is not hidden),
     // then sort bottom-to-top so higher `top_thou` get higher ply indices.
@@ -222,7 +214,7 @@ fn main() {
     // Higher plies overwrite lower ones.
     for (ply_i, ply_desc) in sorted_ply_descs.iter().enumerate().skip(1) {
         for mpoly in &ply_desc.mpoly {
-            let mpoly = mpoly.translated(-(roi_l as i64), -(roi_t as i64));
+            let mpoly = mpoly.translated(-(roi.l as i64), -(roi.t as i64));
             if mpoly.is_empty() {
                 continue;
             }
@@ -389,4 +381,17 @@ fn main() {
     debug_ui::add_lum16("sim_after", &sim_im);
     debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths, 20);
     debug_ui::show();
+}
+
+fn main() {
+    let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
+    // println!("Parsed CompDesc: {:?}", comp_desc);
+
+    let roi = ROI {
+        l: 200,
+        t: 200,
+        r: 800,
+        b: 800,
+    };
+    carve_roi(comp_desc, roi);
 }
