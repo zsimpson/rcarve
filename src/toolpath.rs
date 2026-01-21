@@ -3,7 +3,8 @@ use crate::debug_ui;
 
 use crate::desc::Thou;
 use crate::dilate_im::im_dilate;
-use crate::im::label::{LabelInfo, ROI};
+use crate::im::label::LabelInfo;
+use crate::im::ROI;
 use crate::im::{Im, MaskIm};
 use crate::region_tree::{CutBand, PlyIm, RegionI, RegionIm, RegionNode, RegionRoot};
 use crate::trace::{Contour, contours_by_suzuki_abe};
@@ -377,18 +378,9 @@ pub fn create_toolpaths_from_region_tree(
             }
         }
 
-        // Add a one-pixel border around the above mask to ensure the edges are excluded from the cut.
-        let s = above_mask_im.s;
-        let w_minus_1 = ply_im.w.saturating_sub(1);
-        let h_minus_1_mul_s = ply_im.h.saturating_sub(1) * s;
-        for y in padded_roi.t..padded_roi.b {
-            above_mask_im.arr[y * s + 0] = 255;
-            above_mask_im.arr[y * s + w_minus_1] = 255;
-        }
-        for x in padded_roi.l..padded_roi.r {
-            above_mask_im.arr[x] = 255;
-            above_mask_im.arr[h_minus_1_mul_s + x] = 255;
-        }
+        // Add a one-pixel border on the image edges (over the padded ROI span) to ensure
+        // the image boundary is excluded from the cut.
+        above_mask_im.one_pixel_border_on_image_edges_over_roi_span(padded_roi, 255);
 
         // debug_ui::add_mask_im(
         //     &format!("region_above_mask={} is_floor={}", z_thou.0, is_node_floor),
@@ -438,12 +430,12 @@ pub fn create_toolpaths_from_region_tree(
                 }
             }
 
-            if name == "refine" && dilation_i == 0 {
-                debug_ui::add_mask_im(
-                    &format!("{} dil_cut_mask_im after={} dilation_i={}", name, cut_z_thou.0, dilation_i),
-                    dil_cut_mask_im,
-                );
-            }
+            // if name == "refine" && dilation_i == 0 {
+            //     debug_ui::add_mask_im(
+            //         &format!("{} dil_cut_mask_im after={} dilation_i={}", name, cut_z_thou.0, dilation_i),
+            //         dil_cut_mask_im,
+            //     );
+            // }
 
             let mut node_toolpaths: Vec<ToolPath> = Vec::new();
 

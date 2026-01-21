@@ -2,6 +2,8 @@
 
 use std::marker::PhantomData;
 
+use crate::im::roi;
+
 #[derive(Debug, Clone)]
 pub struct Im<T, const N_CH: usize, S = ()> {
     pub w: usize,
@@ -145,6 +147,94 @@ impl<T, const N_CH: usize, S> Im<T, N_CH, S> {
     }
 }
 
+// Drawing helpers for 1-channel images.
+// -----------------------------------------------------------------------------
+
+impl<T: Copy, S> Im<T, 1, S> {
+    /// Draw a 1-pixel outline along the *ROI border* (top/bottom/left/right) with `value`.
+    ///
+    /// ROI uses left/top inclusive and right/bottom exclusive bounds.
+    pub fn one_pixel_border_along_roi(&mut self, roi: roi::ROI, value: T) -> &mut Self {
+        if self.w == 0 || self.h == 0 {
+            return self;
+        }
+
+        // Clamp ROI to image bounds (right/bottom are exclusive).
+        let l = roi.l.min(self.w);
+        let t = roi.t.min(self.h);
+        let r = roi.r.min(self.w);
+        let b = roi.b.min(self.h);
+
+        if r <= l || b <= t {
+            return self;
+        }
+
+        let y_top = t;
+        let y_bot = b - 1;
+        let x_left = l;
+        let x_right = r - 1;
+
+        // Top/bottom edges
+        for x in l..r {
+            unsafe {
+                *self.get_unchecked_mut(x, y_top, 0) = value;
+                *self.get_unchecked_mut(x, y_bot, 0) = value;
+            }
+        }
+
+        // Left/right edges
+        for y in t..b {
+            unsafe {
+                *self.get_unchecked_mut(x_left, y, 0) = value;
+                *self.get_unchecked_mut(x_right, y, 0) = value;
+            }
+        }
+
+        self
+    }
+
+    /// Draw a 1-pixel border on the *image edges* (x=0/x=w-1/y=0/y=h-1), but only
+    /// over the span covered by `roi`.
+    pub fn one_pixel_border_on_image_edges_over_roi_span(
+        &mut self,
+        roi: roi::ROI,
+        value: T,
+    ) -> &mut Self {
+        if self.w == 0 || self.h == 0 {
+            return self;
+        }
+
+        let l = roi.l.min(self.w);
+        let t = roi.t.min(self.h);
+        let r = roi.r.min(self.w);
+        let b = roi.b.min(self.h);
+        if r <= l || b <= t {
+            return self;
+        }
+
+        let x0 = 0usize;
+        let x1 = self.w - 1;
+        let y0 = 0usize;
+        let y1 = self.h - 1;
+
+        for y in t..b {
+            unsafe {
+                *self.get_unchecked_mut(x0, y, 0) = value;
+                *self.get_unchecked_mut(x1, y, 0) = value;
+            }
+        }
+
+        for x in l..r {
+            unsafe {
+                *self.get_unchecked_mut(x, y0, 0) = value;
+                *self.get_unchecked_mut(x, y1, 0) = value;
+            }
+        }
+
+        self
+    }
+}
+
 // Debug image viewer (feature-gated).
 // -----------------------------------------------------------------------------
 
@@ -268,6 +358,22 @@ pub fn copy_mask_im_to_rgba_im(src: &MaskIm, dst: &mut RGBAIm, r: u8, g: u8, b: 
     }
 }
 
+impl Im<u8, 1, Binary> {
+    pub fn invert(&mut self) -> &mut Self {
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let v = unsafe { *self.get_unchecked(x, y, 0) };
+                let inv: u8 = if v == 0 { 255 } else { 0 };
+                unsafe {
+                    *self.get_unchecked_mut(x, y, 0) = inv;
+                }
+            }
+        }
+        self
+    }
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +388,67 @@ mod tests {
         });
 
         assert_eq!(im.arr, vec![200, 255, 255]);
+    }
+
+    #[test]
+    fn mask_im_inverted_flips_zero_and_nonzero() {
+        let mut m = MaskIm::new(3, 1);
+        m.arr.copy_from_slice(&[0, 1, 255]);
+        m.invert();
+        assert_eq!(m.arr, vec![255, 0, 0]);
+    }
+
+    #[test]
+    fn mask_im_one_pixel_border_along_roi_draws_roi_outline() {
+        let mut m = MaskIm::new(5, 4);
+
+        // ROI: x in [1,4), y in [1,3)
+        m.one_pixel_border_along_roi(
+            roi::ROI {
+                l: 1,
+                t: 1,
+                r: 4,
+                b: 3,
+            },
+            255,
+        );
+
+        // Top edge (y=1): x=1..3
+        assert_eq!(m.get_or_default(1, 1, 0, 0), 255);
+        assert_eq!(m.get_or_default(2, 1, 0, 0), 255);
+        assert_eq!(m.get_or_default(3, 1, 0, 0), 255);
+
+        // Bottom edge (y=2): x=1..3
+        assert_eq!(m.get_or_default(1, 2, 0, 0), 255);
+        assert_eq!(m.get_or_default(2, 2, 0, 0), 255);
+        assert_eq!(m.get_or_default(3, 2, 0, 0), 255);
+
+        // Outside ROI should remain 0
+        assert_eq!(m.get_or_default(0, 0, 0, 0), 0);
+        assert_eq!(m.get_or_default(4, 3, 0, 0), 0);
+    }
+
+    #[test]
+    fn mask_im_one_pixel_border_on_image_edges_over_roi_span_touches_only_image_edges() {
+        let mut m = MaskIm::new(5, 4);
+        m.one_pixel_border_on_image_edges_over_roi_span(
+            roi::ROI {
+                l: 1,
+                t: 1,
+                r: 4,
+                b: 3,
+            },
+            255,
+        );
+
+        // Image edges should be set over ROI's span.
+        assert_eq!(m.get_or_default(0, 1, 0, 0), 255);
+        assert_eq!(m.get_or_default(4, 2, 0, 0), 255);
+        assert_eq!(m.get_or_default(1, 0, 0, 0), 255);
+        assert_eq!(m.get_or_default(3, 3, 0, 0), 255);
+
+        // Interior pixels should remain untouched.
+        assert_eq!(m.get_or_default(2, 1, 0, 0), 0);
+        assert_eq!(m.get_or_default(2, 2, 0, 0), 0);
     }
 }

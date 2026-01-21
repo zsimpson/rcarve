@@ -1,7 +1,9 @@
 use rcarve::debug_ui;
-use rcarve::desc::{Guid, PlyDesc, Thou, ToolDesc, Units, parse_comp_json, CompDesc};
-use rcarve::im::Lum16Im;
-use rcarve::im::label::{LabelInfo, label_im, ROI};
+use rcarve::desc::{CompDesc, Guid, PlyDesc, Thou, ToolDesc, Units, parse_comp_json};
+use rcarve::dilate_im::im_dilate;
+use rcarve::im::ROI;
+use rcarve::im::label::{LabelInfo, label_im};
+use rcarve::im::{Lum16Im, MaskIm};
 use rcarve::region_tree;
 use rcarve::sim::sim_toolpaths;
 use rcarve::toolpath;
@@ -165,7 +167,7 @@ const TEST_JSON: &str = r#"
     }
 "#;
 
-fn carve_roi(comp_desc:CompDesc, roi:ROI) {
+fn carve_roi(comp_desc: CompDesc, roi: ROI) {
     // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
     // in production builds by disabling the `debug_ui` feature.
     debug_ui::init("rcarve debug");
@@ -247,7 +249,13 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
     sim_im.arr.fill(bulk_top_thou.0 as u16);
     let before_sim_im = sim_im.clone();
 
-    // let mut rough_traverse_sim_im = before_sim_im.clone();
+    let refine_tool_guid = comp_desc
+        .carve_desc
+        .refine_tool_guid
+        .as_ref()
+        .expect("No refine tool guid in carve_desc");
+    let (refine_tool_i, refine_tool_dia_pix) =
+        tool_i_and_dia_pix(&comp_desc.tool_descs, refine_tool_guid, ppi);
 
     // Rough
     let rough_toolpaths = {
@@ -327,13 +335,13 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
 
         let refine_region_root = region_tree::create_region_tree(&refine_cut_bands, &region_infos);
 
-        let refine_tool_guid = comp_desc
-            .carve_desc
-            .refine_tool_guid
-            .as_ref()
-            .expect("No refine tool guid in carve_desc");
-        let (refine_tool_i, refine_tool_dia_pix) =
-            tool_i_and_dia_pix(&comp_desc.tool_descs, refine_tool_guid, ppi);
+        // let refine_tool_guid = comp_desc
+        //     .carve_desc
+        //     .refine_tool_guid
+        //     .as_ref()
+        //     .expect("No refine tool guid in carve_desc");
+        // let (refine_tool_i, refine_tool_dia_pix) =
+        //     tool_i_and_dia_pix(&comp_desc.tool_descs, refine_tool_guid, ppi);
         let refine_step_size_pix = (refine_tool_dia_pix.saturating_mul(4) / 5).max(1);
         let refine_margin_pix = 0_usize;
         let refine_pride_thou = Thou(0);
@@ -377,11 +385,79 @@ fn carve_roi(comp_desc:CompDesc, roi:ROI) {
         refine_toolpaths
     };
 
-    debug_ui::add_lum16(
-        "sim_im",
-        &sim_im,
-    );
-    
+    // HERE: Differencer
+    // Now we compare the results of the idealized output from the current sim
+    // and we add tool paths for the differences.
+    // So where does the idealize come from? It is requires a new duniton that does all the negative etc
+    // and this will be similar to what gets used by the previews
+
+    // Build prod view at the refine tool_dia_pix scale
+    // For each play from bottom to top
+    let mut ply_mask_im = MaskIm::new(w, h);
+    let mut dil_ply_mask_im = MaskIm::new(w, h);
+    let mut prod_im = Lum16Im::new(w, h);
+
+    for (ply_i, ply_desc) in sorted_ply_descs.iter().enumerate().skip(1) {
+        ply_mask_im.arr.fill(0);
+        dil_ply_mask_im.arr.fill(0);
+
+        // Set the ply_mask_im to 255 where ply_im is >= ply_i
+        for y in 0..h {
+            for x in 0..w {
+                let v = unsafe { *ply_im.get_unchecked(x, y, 0) };
+                unsafe {
+                    *ply_mask_im.get_unchecked_mut(x, y, 0) = if v as usize >= ply_i {
+                        255_u8
+                    } else {
+                        0_u8
+                    }
+                }
+            }
+        }
+
+        im_dilate(&ply_mask_im, &mut dil_ply_mask_im, refine_tool_dia_pix);
+
+        // Invert dil_ply_mask_im in place
+        dil_ply_mask_im.invert();
+
+        im_dilate(&dil_ply_mask_im, &mut ply_mask_im, refine_tool_dia_pix);
+
+        // The image in the dil_ply_mask_im is now black where we want to write
+        // the ply into the prod_im
+        for y in 0..h {
+            for x in 0..w {
+                let v = unsafe { *ply_mask_im.get_unchecked(x, y, 0) };
+                unsafe {
+                    *prod_im.get_unchecked_mut(x, y, 0) = if v == 0 {
+                        ply_desc.top_thou.0 as u16
+                    } else {
+                        *prod_im.get_unchecked(x, y, 0)
+                    }
+                }
+            }
+        }
+    }
+
+    prod_im.one_pixel_border_on_image_edges_over_roi_span(roi, bulk_top_thou.0 as u16);
+    debug_ui::add_lum16("prod_im", &prod_im);
+
+    debug_ui::add_lum16("sim_im", &sim_im);
+
+    // Subtract prod from sim and anything remaining is a artefact that needs to be cleaned up
+    let mut diff_im = Lum16Im::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let sim_v = unsafe { *sim_im.get_unchecked(x, y, 0) };
+            let prod_v = unsafe { *prod_im.get_unchecked(x, y, 0) };
+            let diff_v = if sim_v != prod_v { sim_v } else { 0_u16 };
+            unsafe {
+                *diff_im.get_unchecked_mut(x, y, 0) = diff_v;
+            }
+        }
+    }
+
+    debug_ui::add_lum16("diff_im", &diff_im);
+
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
 

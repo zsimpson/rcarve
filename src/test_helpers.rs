@@ -1,7 +1,7 @@
 use crate::region_tree::PlyIm;
 use crate::desc::{BandDesc, Guid, PlyDesc, Thou};
 use crate::im::core::Im;
-use crate::im::label::ROI;
+use crate::im::ROI;
 use crate::im::MaskIm;
 use crate::toolpath::ToolPath;
 

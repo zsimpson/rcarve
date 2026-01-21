@@ -53,16 +53,61 @@
 					"column": 0
 				},
 				{
-					"line": 422,
-					"column": 29
+					"line": -1,
+					"column": 0
 				},
 				{
 					"line": -1,
 					"column": 0
 				},
 				{
-					"line": 1151,
+					"line": 1152,
 					"column": 30
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				}
+			]
+		},
+		{
+			"path": "src/main.rs",
+			"bookmarks": [
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": 424,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
+				},
+				{
+					"line": -1,
+					"column": 0
 				},
 				{
 					"line": -1,
