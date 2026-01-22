@@ -1425,6 +1425,7 @@ pub fn add_traverse_toolpaths(sim_im: &mut crate::im::Lum16Im, all_toolpaths: &m
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desc::{parse_comp_json, CompDesc, Guid};
     use crate::im::label::label_im;
     use crate::region_tree::{create_cut_bands, create_region_tree};
     use crate::test_helpers::{
@@ -2065,5 +2066,165 @@ mod tests {
         // After running the open path, current position is at x=5, so the closed loop
         // is rolled to start at the nearest vertex (x=4).
         assert_eq!(closed.points[0].x, 4);
+    }
+
+    #[test]
+    fn toolpath_movie_replay_matches_cut_only_after_scaled_compdesc() {
+        // This test mirrors the debug_ui "toolpath movie" behavior:
+        // - start from a base heightmap
+        // - generate toolpaths
+        // - splice in traverse toolpaths
+        // - replay them from the base
+        // The replay should match applying only the cutting toolpaths, i.e. traverses must not
+        // cause any cutting due to coordinate/scale/translation mistakes.
+
+        let sample = r#"
+        {
+            "version": 3,
+            "guid": "G",
+            "dim_desc": {
+                "bulk_d_inch": 1.0,
+                "bulk_w_inch": 4.0,
+                "bulk_h_inch": 4.0,
+                "padding_inch": 0.0,
+                "frame_inch": 0.5
+            },
+            "ply_desc_by_guid": {
+                "P1": {
+                    "owner_layer_guid": "L1",
+                    "guid": "P1",
+                    "top_thou": 850,
+                    "hidden": false,
+                    "is_floor": false,
+                    "ply_mat": [0.002, 0.0, 0.0, 0.002, 0.0, 0.0],
+                    "mpoly": [
+                        { "exterior": [100,100, 400,100, 400,400, 100,400], "holes": [] }
+                    ]
+                }
+            },
+            "layer_desc_by_guid": {
+                "L1": { "guid": "L1", "hidden": false, "is_frame": false }
+            },
+            "carve_desc": {
+                "grain_y": true,
+                "rough_tool_guid": null,
+                "refine_tool_guid": null,
+                "detail_tool_guid": null
+            },
+            "bands": [
+                { "top_thou": 1000, "bot_thou": 0, "cut_pass": "rough" }
+            ]
+        }
+        "#;
+
+        let ppi: usize = 200;
+        let comp: CompDesc = parse_comp_json(sample).expect("json should deserialize");
+        let scale = (
+            comp.dim_desc.bulk_w_inch * ppi as f64,
+            comp.dim_desc.bulk_h_inch * ppi as f64,
+        );
+        let frame_px = (comp.dim_desc.frame_inch * ppi as f64).round() as i64;
+        let comp = comp.with_adjusted_mpolys((frame_px, frame_px), scale);
+
+        let w = (comp.dim_desc.bulk_w_inch * ppi as f64).round() as usize;
+        let h = (comp.dim_desc.bulk_h_inch * ppi as f64).round() as usize;
+
+        // Build sorted ply descs like main.rs.
+        let mut sorted_ply_descs: Vec<crate::desc::PlyDesc> = comp.ply_desc_by_guid.values().cloned().collect();
+        sorted_ply_descs.sort_by(|a, b| a.top_thou.cmp(&b.top_thou));
+        sorted_ply_descs.insert(
+            0,
+            crate::desc::PlyDesc {
+                owner_layer_guid: Guid("".to_string()),
+                guid: Guid("".to_string()),
+                top_thou: crate::desc::Thou(0),
+                hidden: true,
+                is_floor: false,
+                ply_mat: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                mpoly: Vec::new(),
+            },
+        );
+
+        // Raster ply_im.
+        let mut ply_im: crate::region_tree::PlyIm = crate::region_tree::PlyIm::new(w, h);
+        for (ply_i, ply_desc) in sorted_ply_descs.iter().enumerate().skip(1) {
+            for mpoly in &ply_desc.mpoly {
+                if mpoly.is_empty() {
+                    continue;
+                }
+                mpoly.raster(&mut ply_im, |ply_im, x_start, x_end, y| {
+                    for x in x_start..x_end {
+                        unsafe {
+                            *ply_im.get_unchecked_mut(x as usize, y as usize, 0) = ply_i as u16;
+                        }
+                    }
+                });
+            }
+        }
+
+        let (region_im_raw, region_infos) = label_im(&ply_im);
+        let region_im: crate::region_tree::RegionIm = region_im_raw.retag::<crate::region_tree::RegionI>();
+
+        // Create cut bands + region tree.
+        let cut_bands = create_cut_bands(
+            "rough",
+            &ply_im,
+            &comp.bands,
+            &region_im,
+            &region_infos,
+            &sorted_ply_descs,
+        );
+        let region_root = create_region_tree(&cut_bands, &region_infos);
+
+        // Generate toolpaths.
+        let tool_dia_pix = 5_usize;
+        let tool_step_pix = 3_usize;
+        let toolpaths = create_toolpaths_from_region_tree(
+            "rough",
+            &region_root,
+            &cut_bands,
+            0,
+            tool_dia_pix,
+            tool_step_pix,
+            0,
+            crate::desc::Thou(0),
+            &ply_im,
+            &region_im,
+            None,
+            &region_infos,
+            0,
+            tool_step_pix,
+            true,
+            None,
+        );
+
+        assert!(!toolpaths.is_empty(), "expected at least one toolpath");
+
+        // Sanity: all generated points should be within image bounds.
+        for tp in &toolpaths {
+            for p in &tp.points {
+                assert!(p.x >= 0 && (p.x as usize) < w, "toolpath x out of bounds: {} (w={})", p.x, w);
+                assert!(p.y >= 0 && (p.y as usize) < h, "toolpath y out of bounds: {} (h={})", p.y, h);
+            }
+        }
+
+        // Base heightmap.
+        let bulk_top_thou = crate::desc::Thou((comp.dim_desc.bulk_d_inch * 1000.0).round() as i32);
+        let mut base = crate::im::Lum16Im::new(w, h);
+        base.arr.fill(bulk_top_thou.0 as u16);
+
+        // Expected: replay only cutting toolpaths.
+        let mut expected = base.clone();
+        let mut cut_only = toolpaths.clone();
+        crate::sim::sim_toolpaths(&mut expected, &mut cut_only, None);
+
+        // Movie behavior: splice traverse toolpaths, then replay *all* toolpaths.
+        let mut movie_toolpaths = toolpaths;
+        let mut scratch_for_traverse = base.clone();
+        add_traverse_toolpaths(&mut scratch_for_traverse, &mut movie_toolpaths);
+        let mut movie = base;
+        crate::sim::sim_toolpaths(&mut movie, &mut movie_toolpaths, None);
+
+        assert_eq!(expected.arr, movie.arr, "toolpath movie replay diverged from cutting-only replay");
     }
 }

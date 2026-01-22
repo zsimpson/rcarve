@@ -157,6 +157,61 @@ impl MPoly {
         Self::new(out_paths)
     }
 
+    /// Returns a transformed copy of this polygon, applying an axis-aligned scale then a
+    /// translation, in that order.
+    ///
+    /// This is commonly used to convert from normalized/real units (e.g. inches) into pixels:
+    /// `pixels = round(units * pixels_per_unit) + offset_px`.
+    pub fn scaled_translated(&self, sx: f64, sy: f64, dx: i64, dy: i64) -> Self {
+        if (sx == 1.0 && sy == 1.0) && (dx == 0 && dy == 0) {
+            return self.clone();
+        }
+
+        // Keep behavior predictable for pathological inputs.
+        let sx = if sx.is_finite() { sx } else { 1.0 };
+        let sy = if sy.is_finite() { sy } else { 1.0 };
+
+        let mut out_paths: Vec<IntPath> = Vec::with_capacity(self.paths.len());
+        for path in self.paths.iter() {
+            let mut out_pts: Vec<IntPoint> = Vec::with_capacity(path.len());
+            for pt in path.iter() {
+                let x = ((pt.x_scaled() as f64) * sx).round() as i64;
+                let y = ((pt.y_scaled() as f64) * sy).round() as i64;
+                out_pts.push(IntPoint::from_scaled(x.saturating_add(dx), y.saturating_add(dy)));
+            }
+            out_paths.push(IntPath::new(out_pts));
+        }
+
+        Self::new(out_paths)
+    }
+
+    /// Like `scaled_translated`, but treats the current coordinates as fixed-point values with the
+    /// given denominator.
+    ///
+    /// Conceptually: `x' = round((x / denom) * sx) + dx`.
+    pub fn scaled_translated_div(&self, sx: f64, sy: f64, denom: f64, dx: i64, dy: i64) -> Self {
+        if (sx == 1.0 && sy == 1.0) && (dx == 0 && dy == 0) && denom == 1.0 {
+            return self.clone();
+        }
+
+        let sx = if sx.is_finite() { sx } else { 1.0 };
+        let sy = if sy.is_finite() { sy } else { 1.0 };
+        let denom = if denom.is_finite() && denom > 0.0 { denom } else { 1.0 };
+
+        let mut out_paths: Vec<IntPath> = Vec::with_capacity(self.paths.len());
+        for path in self.paths.iter() {
+            let mut out_pts: Vec<IntPoint> = Vec::with_capacity(path.len());
+            for pt in path.iter() {
+                let x = ((pt.x_scaled() as f64) * sx / denom).round() as i64;
+                let y = ((pt.y_scaled() as f64) * sy / denom).round() as i64;
+                out_pts.push(IntPoint::from_scaled(x.saturating_add(dx), y.saturating_add(dy)));
+            }
+            out_paths.push(IntPath::new(out_pts));
+        }
+
+        Self::new(out_paths)
+    }
+
     pub fn raster<
         T: Copy + Default,
         const N_CH: usize,

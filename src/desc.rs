@@ -30,6 +30,11 @@ impl fmt::Display for Guid {
 // At some point I might consider a Deref impl here, but for now keep it simple.
 type FlatVerts = Vec<i32>;
 
+// Parsed `mpoly` coordinates are expected to be in normalized/real units after applying `ply_mat`.
+// Those values can be fractional (e.g. 0.2), so we store them as fixed-point integers until we
+// later convert to pixel-space.
+const MPOLY_NORM_FIXED_DENOM: f64 = 1_000_000.0;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -156,6 +161,34 @@ pub fn parse_comp_json(json_text: &str) -> Result<CompDesc, serde_json::Error> {
     serde_json::from_str(json_text)
 }
 
+impl CompDesc {
+    /// Applies an axis-aligned affine transform to every `mpoly` in every `PlyDesc`.
+    ///
+    /// The transform is applied as: `x' = round(x * sx) + dx`, `y' = round(y * sy) + dy`.
+    ///
+    /// This is useful when JSON parsing produces normalized/real-unit coordinates and you want
+    /// to convert into pixel space.
+    pub fn with_adjusted_mpolys(mut self, translation: (i64, i64), scale: (f64, f64)) -> Self {
+        let (dx, dy) = translation;
+        let (sx, sy) = scale;
+
+        for ply_desc in self.ply_desc_by_guid.values_mut() {
+            for mpoly in ply_desc.mpoly.iter_mut() {
+                *mpoly = mpoly.scaled_translated_div(sx, sy, MPOLY_NORM_FIXED_DENOM, dx, dy);
+            }
+        }
+
+        self
+    }
+
+    /// Convenience helper for converting normalized/real-unit geometry into pixels.
+    ///
+    /// Equivalent to `with_adjusted_mpolys((0, 0), (pixels_per_unit, pixels_per_unit))`.
+    pub fn with_mpolys_scaled_to_pixels(self, pixels_per_unit: f64) -> Self {
+        self.with_adjusted_mpolys((0, 0), (pixels_per_unit, pixels_per_unit))
+    }
+}
+
 use crate::mat3::Mat3;
 use crate::mpoly::{IntPath, IntPoint, MPoly};
 pub fn polydesc_to_mpoly(polydesc: &PolyDesc, ply_xform: &Mat3) -> MPoly {
@@ -174,7 +207,10 @@ pub fn polydesc_to_mpoly(polydesc: &PolyDesc, ply_xform: &Mat3) -> MPoly {
         let mut pts: Vec<IntPoint> = Vec::with_capacity(n / 2);
         for xy in flat[..n].chunks_exact(2) {
             let (x, y) = ply_xform.transform_point2(xy[0] as f64, xy[1] as f64);
-            pts.push(IntPoint::from_scaled(x.round() as i64, y.round() as i64));
+            pts.push(IntPoint::from_scaled(
+                (x * MPOLY_NORM_FIXED_DENOM).round() as i64,
+                (y * MPOLY_NORM_FIXED_DENOM).round() as i64,
+            ));
         }
 
         Some(IntPath::new(pts))
@@ -198,6 +234,75 @@ pub fn polydesc_to_mpoly(polydesc: &PolyDesc, ply_xform: &Mat3) -> MPoly {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mpolys_scale_from_ply_mat_normalized_units_into_pixels() {
+        // JSON vertices are in 0..500 units. `ply_mat` scales by 0.002, so coordinates become 0..1
+        // (normalized). Then `with_adjusted_mpolys` should map normalized coords into pixels using:
+        //   scale = (bulk_w_inch * ppi, bulk_h_inch * ppi)
+        //   translation = (frame_inch * ppi, frame_inch * ppi)
+        let sample = r#"
+        {
+            "version": 3,
+            "guid": "G",
+            "dim_desc": {
+                "bulk_d_inch": 1.0,
+                "bulk_w_inch": 4.0,
+                "bulk_h_inch": 4.0,
+                "padding_inch": 0.0,
+                "frame_inch": 0.5
+            },
+            "ply_desc_by_guid": {
+                "HZWKZRTQJV": {
+                    "owner_layer_guid": "L1",
+                    "guid": "HZWKZRTQJV",
+                    "top_thou": 850,
+                    "hidden": false,
+                    "is_floor": false,
+                    "ply_mat": [0.002, 0.0, 0.0, 0.002, 0.0, 0.0],
+                    "mpoly": [
+                        {
+                            "exterior": [100,100, 400,100, 400,400, 100,400],
+                            "holes": []
+                        }
+                    ]
+                }
+            },
+            "layer_desc_by_guid": {
+                "L1": { "guid": "L1", "hidden": false, "is_frame": false }
+            },
+            "carve_desc": {
+                "grain_y": true,
+                "rough_tool_guid": null,
+                "refine_tool_guid": null,
+                "detail_tool_guid": null
+            }
+        }
+        "#;
+
+        let comp: CompDesc = parse_comp_json(sample).expect("sample json should deserialize");
+        let ppi: usize = 200;
+
+        let scale = (
+            comp.dim_desc.bulk_w_inch * ppi as f64,
+            comp.dim_desc.bulk_h_inch * ppi as f64,
+        );
+        let frame_px = (comp.dim_desc.frame_inch * ppi as f64).round() as i64;
+
+        let comp_px = comp.with_adjusted_mpolys((frame_px, frame_px), scale);
+        let ply = comp_px
+            .ply_desc_by_guid
+            .get(&Guid("HZWKZRTQJV".to_string()))
+            .expect("ply should exist");
+        assert_eq!(ply.mpoly.len(), 1);
+
+        let ext = ply.mpoly[0].iter().next().expect("exterior path should exist");
+        let pts: Vec<(i64, i64)> = ext.iter().map(|pt| (pt.x_scaled(), pt.y_scaled())).collect();
+
+        // 100 -> 0.2 -> 0.2*(4*200)=160, + frame(0.5*200)=100 => 260
+        // 400 -> 0.8 -> 0.8*(4*200)=640, + 100 => 740
+        assert_eq!(pts, vec![(260, 260), (740, 260), (740, 740), (260, 740)]);
+    }
 
     #[test]
     fn comp_desc_deserializes_sample_json() {
@@ -355,3 +460,4 @@ mod tests {
             .contains_key(&Guid("R7Y9XP4VNB".to_string())));
     }
 }
+

@@ -3,6 +3,7 @@ use rcarve::desc::{CompDesc, Guid, PlyDesc, Thou, ToolDesc, Units, parse_comp_js
 use rcarve::dilate_im::im_dilate;
 use rcarve::im::label::{LabelInfo, label_im};
 use rcarve::im::{Lum16Im, MaskIm, ROI};
+use rcarve::mpoly::{IntPath, IntPoint, MPoly};
 use rcarve::region_tree;
 use rcarve::sim;
 use rcarve::toolpath;
@@ -47,7 +48,7 @@ const TEST_JSON: &str = r#"
                 "top_thou": 850,
                 "hidden": false,
                 "is_floor": false,
-                "ply_mat": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                "ply_mat": [0.002, 0.0, 0.0, 0.002, 0.0, 0.0],
                 "mpoly": [
                     {
                         "exterior": [100,100, 400,100, 400,400, 100,400],
@@ -63,6 +64,7 @@ const TEST_JSON: &str = r#"
                 "top_thou": 720,
                 "hidden": false,
                 "is_floor": false,
+                "ply_mat": [0.002, 0.0, 0.0, 0.002, 0.0, 0.0],
                 "mpoly": [
                     {
                         "exterior": [30,30, 150,30, 150,150, 30,150],
@@ -76,6 +78,7 @@ const TEST_JSON: &str = r#"
                 "top_thou": 500,
                 "hidden": true,
                 "is_floor": false,
+                "ply_mat": [0.002, 0.0, 0.0, 0.002, 0.0, 0.0],
                 "mpoly": [
                     {
                         "exterior": [0, 0, 500,0, 500,500, 0,500],
@@ -91,6 +94,7 @@ const TEST_JSON: &str = r#"
                 "top_thou": 100,
                 "hidden": false,
                 "is_floor": true,
+                "ply_mat": [0.002, 0.0, 0.0, 0.002, 0.0, 0.0],
                 "mpoly": [
                     {
                         "exterior": [0, 0, 500,0, 500,500, 0,500],
@@ -277,15 +281,15 @@ fn make_diff_im(sim_im: &Lum16Im, prod_im: &Lum16Im) -> MaskIm {
     diff_mask_im
 }
 
-fn carve_roi(comp_desc: CompDesc, roi: ROI) {
+fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
     // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
     // in production builds by disabling the `debug_ui` feature.
     debug_ui::init("rcarve debug");
 
-    // Pixels per inch used for conversions between inches and pixels.
-    let ppi: usize = 100_usize;
     let w = (roi.r - roi.l) as usize;
     let h = (roi.b - roi.t) as usize;
+
+    let bulk_top_thou = Thou((comp_desc.dim_desc.bulk_d_inch * 1000.0).round() as i32);
 
     // Keep plies that are not hidden (and whose layer is not hidden),
     // then sort bottom-to-top so higher `top_thou` get higher ply indices.
@@ -321,6 +325,42 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI) {
         },
     );
 
+    // Add a dummy ply for the frame. The frame is "uncut" stock, so it has the same top_thou
+    // as the initial bulk thickness.
+    let frame_px = (comp_desc.dim_desc.frame_inch * ppi as f64).round() as i64;
+    if frame_px > 0 {
+        let fp = frame_px as usize;
+        if fp * 2 < w && fp * 2 < h {
+            let l = roi.l as i64;
+            let t = roi.t as i64;
+            let r = roi.r as i64;
+            let b = roi.b as i64;
+            let outer = IntPath::new(vec![
+                IntPoint::from_scaled(l, t),
+                IntPoint::from_scaled(r, t),
+                IntPoint::from_scaled(r, b),
+                IntPoint::from_scaled(l, b),
+            ]);
+            let inner = IntPath::new(vec![
+                IntPoint::from_scaled(l + fp as i64, t + fp as i64),
+                IntPoint::from_scaled(r - fp as i64, t + fp as i64),
+                IntPoint::from_scaled(r - fp as i64, b - fp as i64),
+                IntPoint::from_scaled(l + fp as i64, b - fp as i64),
+            ]);
+            let frame_mpoly = MPoly::new(vec![outer, inner]);
+
+            sorted_ply_descs.push(PlyDesc {
+                owner_layer_guid: Guid("".to_string()),
+                guid: Guid("__FRAME__".to_string()),
+                top_thou: bulk_top_thou,
+                hidden: true,
+                is_floor: false,
+                ply_mat: vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                mpoly: vec![frame_mpoly],
+            });
+        }
+    }
+
     let mut ply_im: region_tree::PlyIm = region_tree::PlyIm::new(w, h);
 
     // From bottom to top, raster each ply into the image using its index as the value.
@@ -348,9 +388,6 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI) {
     let region_im: region_tree::RegionIm = region_im_raw.retag::<region_tree::RegionI>();
 
     // debug_ui::add_region_im("region_im", &region_im);
-
-    let bulk_d_inch = comp_desc.dim_desc.bulk_d_inch;
-    let bulk_top_thou = Thou((bulk_d_inch * 1000.0).round() as i32);
 
     let max_segment_len_inch = 4.0_f64;
     let max_segment_len_pix = ((max_segment_len_inch * ppi as f64).round() as usize).max(1);
@@ -527,14 +564,31 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI) {
 }
 
 fn main() {
+    // Pixels per inch used for conversions between inches and pixels.
+    let ppi: usize = 100_usize;
+
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
+
+    let total_w_inch =
+        comp_desc.dim_desc.bulk_w_inch + 2.0 * comp_desc.dim_desc.frame_inch;
+    let total_h_inch =
+        comp_desc.dim_desc.bulk_h_inch + 2.0 * comp_desc.dim_desc.frame_inch;
+
+    // Convert normalized/real-unit geometry into pixel space.
+    let scale = (
+        comp_desc.dim_desc.bulk_w_inch * ppi as f64,
+        comp_desc.dim_desc.bulk_h_inch * ppi as f64,
+    );
+    let frame_px = (comp_desc.dim_desc.frame_inch * ppi as f64).round() as i64;
+    let translation = (frame_px, frame_px);
+    let comp_desc = comp_desc.with_adjusted_mpolys(translation, scale);
     // println!("Parsed CompDesc: {:?}", comp_desc);
 
     let roi = ROI {
         l: 0,
         t: 0,
-        r: 500,
-        b: 500,
+        r: ppi * total_w_inch as usize,
+        b: ppi * total_h_inch as usize,
     };
-    carve_roi(comp_desc, roi);
+    carve_roi(comp_desc, roi, ppi);
 }
