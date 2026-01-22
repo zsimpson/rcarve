@@ -644,46 +644,8 @@ mod imp {
         fn ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
             self.render_if_needed(ctx);
 
-            ui.vertical(|ui| {
-                ui.group(|ui| {
-                    ui.set_min_height(36.0);
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(60.0)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(&self.title);
-                                ui.separator();
-                                monospace_wrap(ui, format!("mode={:?} mul={:.4}", self.mode, self.params.mul));
-                                if !self.hover_text.is_empty() {
-                                    ui.separator();
-                                    monospace_wrap(ui, self.hover_text.clone());
-                                }
-                            });
-                        });
-                });
-
-                let w = self.src.w;
-                let h = self.src.h;
-                let Some(tex) = &self.texture else { return };
-
-                let image_size = egui::vec2(w as f32, h as f32);
-                let response = ui.add(egui::Image::new((tex.id(), image_size)));
-
-                if response.hovered() {
-                    if let Some(pos) = response.hover_pos() {
-                        let rect = response.rect;
-                        let fx = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 0.999_999);
-                        let fy = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 0.999_999);
-                        let x = (fx * (w as f32)) as usize;
-                        let y = (fy * (h as f32)) as usize;
-
-                        let src = self.src.source_text_at(x, y);
-                        let viz = self.rgba_text_at(x, y);
-                        self.hover_text = format!("x={x} y={y} {src} {viz}");
-                    }
-                }
-
+            // Layout bottom controls first so the image can use the remaining space.
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.monospace("cmd>");
@@ -702,6 +664,64 @@ mod imp {
                 if !self.status.is_empty() {
                     ui.monospace(&self.status);
                 }
+
+                // Image area.
+                let w = self.src.w;
+                let h = self.src.h;
+                let Some(tex) = &self.texture else { return };
+
+                let avail_rect = ui.available_rect_before_wrap();
+                let avail = avail_rect.size();
+                let scale = if w == 0 || h == 0 || avail.x <= 0.0 || avail.y <= 0.0 {
+                    1.0
+                } else {
+                    (avail.x / (w as f32)).min(avail.y / (h as f32))
+                };
+                let image_size = egui::vec2((w as f32) * scale, (h as f32) * scale);
+
+                let image_rect = egui::Rect::from_center_size(avail_rect.center(), image_size);
+
+                let response = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(image_rect), |ui| {
+                        ui.add(egui::Image::new((tex.id(), image_size)))
+                    })
+                    .inner;
+
+                if response.hovered() {
+                    if let Some(pos) = response.hover_pos() {
+                        let rect = image_rect;
+                        let fx = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 0.999_999);
+                        let fy = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 0.999_999);
+                        let x = (fx * (w as f32)) as usize;
+                        let y = (fy * (h as f32)) as usize;
+
+                        let src = self.src.source_text_at(x, y);
+                        let viz = self.rgba_text_at(x, y);
+                        self.hover_text = format!("x={x} y={y} {src} {viz}");
+                    }
+                }
+
+                // Header (placed last so it appears at the top in bottom-up layout).
+                ui.group(|ui| {
+                    ui.set_min_height(36.0);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .max_height(60.0)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(&self.title);
+                                ui.separator();
+                                monospace_wrap(
+                                    ui,
+                                    format!("mode={:?} mul={:.4}", self.mode, self.params.mul),
+                                );
+                                if !self.hover_text.is_empty() {
+                                    ui.separator();
+                                    monospace_wrap(ui, self.hover_text.clone());
+                                }
+                            });
+                        });
+                });
             });
         }
     }
@@ -946,7 +966,14 @@ mod imp {
 
             let next_step = ctx.input(|i| {
                 if i.key_pressed(egui::Key::ArrowRight) {
-                    Some(if i.modifiers.shift { 20 } else { 1 })
+                    let big = i.modifiers.shift && (i.modifiers.ctrl || i.modifiers.command);
+                    Some(if big {
+                        100
+                    } else if i.modifiers.shift {
+                        10
+                    } else {
+                        1
+                    })
                 } else if i.key_pressed(egui::Key::PageDown) || i.key_pressed(egui::Key::N) {
                     Some(1)
                 } else {
@@ -959,7 +986,14 @@ mod imp {
 
             let prev_step = ctx.input(|i| {
                 if i.key_pressed(egui::Key::ArrowLeft) {
-                    Some(if i.modifiers.shift { -20 } else { -1 })
+                    let big = i.modifiers.shift && (i.modifiers.ctrl || i.modifiers.command);
+                    Some(if big {
+                        -100
+                    } else if i.modifiers.shift {
+                        -10
+                    } else {
+                        -1
+                    })
                 } else if i.key_pressed(egui::Key::PageUp) || i.key_pressed(egui::Key::P) {
                     Some(-1)
                 } else {
@@ -975,7 +1009,103 @@ mod imp {
             self.handle_hotkeys(ctx);
             self.render_if_needed(ctx);
 
-            ui.vertical(|ui| {
+            // Layout bottom controls first so the image can use the remaining space.
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.monospace("cmd>");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.cmd)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("tp 10 | next | prev | mul 2.0"),
+                    );
+
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let line = self.cmd.trim().to_owned();
+                        self.cmd.clear();
+                        self.apply_cmd(&line);
+                    }
+                });
+                ui.monospace(
+                    "hotkeys: ArrowLeft/ArrowRight (Shift=±10, Ctrl+Shift=±100) or PgUp/PgDn or p/n",
+                );
+                if !self.status.is_empty() {
+                    ui.monospace(&self.status);
+                }
+
+                // Image area.
+                let w = self.sim.w;
+                let h = self.sim.h;
+                let Some(tex) = &self.texture else { return };
+
+                let avail_rect = ui.available_rect_before_wrap();
+                let avail = avail_rect.size();
+                let scale = if w == 0 || h == 0 || avail.x <= 0.0 || avail.y <= 0.0 {
+                    1.0
+                } else {
+                    (avail.x / (w as f32)).min(avail.y / (h as f32))
+                };
+                let image_size = egui::vec2((w as f32) * scale, (h as f32) * scale);
+
+                let image_rect = egui::Rect::from_center_size(avail_rect.center(), image_size);
+
+                let response = ui
+                    .scope_builder(egui::UiBuilder::new().max_rect(image_rect), |ui| {
+                        ui.add(egui::Image::new((tex.id(), image_size)))
+                    })
+                    .inner;
+
+                // Overlay the active toolpath polyline.
+                if let Some(tp_i) = self.active_toolpath_index() {
+                    if let Some(tp) = self.movie_toolpaths.get(tp_i) {
+                        if tp.points.len() >= 2 {
+                            let rect = image_rect;
+                            let painter = ui.painter_at(rect);
+                            let xf = egui::emath::RectTransform::from_to(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(w as f32, h as f32),
+                                ),
+                                rect,
+                            );
+
+                            let mut pts: Vec<egui::Pos2> = Vec::with_capacity(tp.points.len());
+                            for p in &tp.points {
+                                let px = p.x.clamp(0, (w.saturating_sub(1)) as i32) as f32;
+                                let py = p.y.clamp(0, (h.saturating_sub(1)) as i32) as f32;
+                                pts.push(xf.transform_pos(egui::pos2(px + 0.5, py + 0.5)));
+                            }
+
+                            let stroke = if tp.is_traverse {
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(240, 200, 40))
+                            } else {
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 40, 40))
+                            };
+                            painter.add(egui::Shape::line(pts.clone(), stroke));
+
+                            if let (Some(start), Some(end)) = (pts.first().copied(), pts.last().copied()) {
+                                painter.circle_filled(start, 3.0, egui::Color32::from_rgb(40, 255, 40));
+                                painter.circle_filled(end, 3.0, egui::Color32::from_rgb(40, 160, 255));
+                            }
+                        }
+                    }
+                }
+
+                if response.hovered() {
+                    if let Some(pos) = response.hover_pos() {
+                        let rect = image_rect;
+                        let fx = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 0.999_999);
+                        let fy = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 0.999_999);
+                        let x = (fx * (w as f32)) as usize;
+                        let y = (fy * (h as f32)) as usize;
+
+                        let src = self.src_text_at(x, y);
+                        let viz = self.rgba_text_at(x, y);
+                        self.hover_text = format!("x={x} y={y} {src} {viz}");
+                    }
+                }
+
+                // Header (placed last so it appears at the top in bottom-up layout).
                 ui.group(|ui| {
                     ui.set_min_height(36.0);
                     egui::ScrollArea::vertical()
@@ -1031,7 +1161,10 @@ mod imp {
                                         }
                                     }
                                     None => {
-                                        monospace_wrap(ui, format!("toolpath=none (applied=0/{len})"));
+                                        monospace_wrap(
+                                            ui,
+                                            format!("toolpath=none (applied=0/{len})"),
+                                        );
                                     }
                                 };
 
@@ -1045,81 +1178,6 @@ mod imp {
                             });
                         });
                 });
-
-                let w = self.sim.w;
-                let h = self.sim.h;
-                let Some(tex) = &self.texture else { return };
-
-                let image_size = egui::vec2(w as f32, h as f32);
-                let response = ui.add(egui::Image::new((tex.id(), image_size)));
-
-                // Overlay the active toolpath polyline.
-                if let Some(tp_i) = self.active_toolpath_index() {
-                    if let Some(tp) = self.movie_toolpaths.get(tp_i) {
-                        if tp.points.len() >= 2 {
-                            let rect = response.rect;
-                            let painter = ui.painter_at(rect);
-                            let sx = rect.width() / (w as f32);
-                            let sy = rect.height() / (h as f32);
-
-                            let mut pts: Vec<egui::Pos2> = Vec::with_capacity(tp.points.len());
-                            for p in &tp.points {
-                                let px = p.x.clamp(0, (w.saturating_sub(1)) as i32) as f32;
-                                let py = p.y.clamp(0, (h.saturating_sub(1)) as i32) as f32;
-                                pts.push(egui::pos2(
-                                    rect.left() + (px + 0.5) * sx,
-                                    rect.top() + (py + 0.5) * sy,
-                                ));
-                            }
-
-                            let stroke = if tp.is_traverse {
-                                egui::Stroke::new(1.5, egui::Color32::from_rgb(240, 200, 40))
-                            } else {
-                                egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 40, 40))
-                            };
-                            painter.add(egui::Shape::line(pts.clone(), stroke));
-
-                            if let (Some(start), Some(end)) = (pts.first().copied(), pts.last().copied()) {
-                                painter.circle_filled(start, 3.0, egui::Color32::from_rgb(40, 255, 40));
-                                painter.circle_filled(end, 3.0, egui::Color32::from_rgb(40, 160, 255));
-                            }
-                        }
-                    }
-                }
-
-                if response.hovered() {
-                    if let Some(pos) = response.hover_pos() {
-                        let rect = response.rect;
-                        let fx = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 0.999_999);
-                        let fy = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 0.999_999);
-                        let x = (fx * (w as f32)) as usize;
-                        let y = (fy * (h as f32)) as usize;
-
-                        let src = self.src_text_at(x, y);
-                        let viz = self.rgba_text_at(x, y);
-                        self.hover_text = format!("x={x} y={y} {src} {viz}");
-                    }
-                }
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.monospace("cmd>");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.cmd)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("tp 10 | next | prev | mul 2.0"),
-                    );
-
-                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        let line = self.cmd.trim().to_owned();
-                        self.cmd.clear();
-                        self.apply_cmd(&line);
-                    }
-                });
-                ui.monospace("hotkeys: ArrowLeft/ArrowRight (Shift=±20) or PgUp/PgDn or p/n");
-                if !self.status.is_empty() {
-                    ui.monospace(&self.status);
-                }
             });
         }
     }

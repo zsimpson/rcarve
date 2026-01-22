@@ -8,6 +8,10 @@ use rcarve::region_tree;
 use rcarve::sim;
 use rcarve::toolpath;
 
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::Mutex;
+
 fn tool_i_and_dia_pix(tool_descs: &[ToolDesc], tool_guid: &Guid, ppi: usize) -> (usize, usize) {
     let (tool_i, tool_desc) = tool_descs
         .iter()
@@ -36,8 +40,8 @@ const TEST_JSON: &str = r#"
         "guid": "JGYYJQBHTX",
         "dim_desc": {
             "bulk_d_inch": 1.0,
-            "bulk_w_inch": 4,
-            "bulk_h_inch": 4,
+            "bulk_w_inch": 20,
+            "bulk_h_inch": 20,
             "padding_inch": 0,
             "frame_inch": 0.5
         },
@@ -281,10 +285,87 @@ fn make_diff_im(sim_im: &Lum16Im, prod_im: &Lum16Im) -> MaskIm {
     diff_mask_im
 }
 
-fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
-    // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
-    // in production builds by disabling the `debug_ui` feature.
-    debug_ui::init("rcarve debug");
+fn translate_toolpaths_in_place(toolpaths: &mut [toolpath::ToolPath], dx: i32, dy: i32) {
+    if dx == 0 && dy == 0 {
+        return;
+    }
+
+    for tp in toolpaths.iter_mut() {
+        for p in tp.points.iter_mut() {
+            p.x = p.x.checked_add(dx).expect("toolpath x overflow");
+            p.y = p.y.checked_add(dy).expect("toolpath y overflow");
+        }
+    }
+}
+
+fn carve_rois_in_pool(
+    comp_desc: Arc<CompDesc>,
+    global_roi: ROI,
+    tile_rois: Vec<ROI>,
+    ppi: usize,
+    n_workers: usize,
+) -> Vec<toolpath::ToolPath> {
+    if tile_rois.is_empty() {
+        return Vec::new();
+    }
+
+    let n_workers = n_workers.max(1).min(tile_rois.len());
+
+    // Jobs are (tile_index, ROI); send `None` as a stop signal.
+    let (job_tx, job_rx) = mpsc::channel::<Option<(usize, ROI)>>();
+    let job_rx = Arc::new(Mutex::new(job_rx));
+    let (res_tx, res_rx) = mpsc::channel::<(usize, Vec<toolpath::ToolPath>)>();
+
+    for _ in 0..n_workers {
+        let comp_desc = Arc::clone(&comp_desc);
+        let job_rx = Arc::clone(&job_rx);
+        let res_tx = res_tx.clone();
+        std::thread::spawn(move || loop {
+            let msg = {
+                let rx = job_rx.lock().expect("job_rx poisoned");
+                rx.recv()
+            };
+
+            match msg {
+                Ok(Some((tile_i, tile_roi))) => {
+                    let toolpaths = carve_roi(&comp_desc, global_roi, tile_roi, ppi);
+                    let _ = res_tx.send((tile_i, toolpaths));
+                }
+                Ok(None) | Err(_) => break,
+            }
+        });
+    }
+
+    // Enqueue all jobs.
+    for (tile_i, roi) in tile_rois.iter().copied().enumerate() {
+        job_tx
+            .send(Some((tile_i, roi)))
+            .expect("failed to enqueue job");
+    }
+    // Tell workers to stop.
+    for _ in 0..n_workers {
+        let _ = job_tx.send(None);
+    }
+    drop(job_tx);
+
+    // Collect exactly one result per tile ROI, preserving row-major tile order.
+    let mut by_tile: Vec<Vec<toolpath::ToolPath>> = vec![Vec::new(); tile_rois.len()];
+    for _ in 0..tile_rois.len() {
+        let (tile_i, toolpaths) = res_rx.recv().expect("worker result channel closed");
+        if tile_i >= by_tile.len() {
+            panic!("worker returned invalid tile index {tile_i}");
+        }
+        by_tile[tile_i] = toolpaths;
+    }
+
+    let mut all_toolpaths: Vec<toolpath::ToolPath> = Vec::new();
+    for mut tp in by_tile {
+        all_toolpaths.append(&mut tp);
+    }
+    all_toolpaths
+}
+
+fn carve_roi(comp_desc: &CompDesc, global_roi: ROI, roi: ROI, ppi: usize) -> Vec<toolpath::ToolPath> {
 
     let w = (roi.r - roi.l) as usize;
     let h = (roi.b - roi.t) as usize;
@@ -325,16 +406,16 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
         },
     );
 
-    // Add a dummy ply for the frame. The frame is "uncut" stock, so it has the same top_thou
-    // as the initial bulk thickness.
+    // Add a dummy ply for the global frame only (not per-tile).
+    // The frame is "uncut" stock, so it has the same top_thou as the initial bulk thickness.
     let frame_px = (comp_desc.dim_desc.frame_inch * ppi as f64).round() as i64;
     if frame_px > 0 {
         let fp = frame_px as usize;
-        if fp * 2 < w && fp * 2 < h {
-            let l = roi.l as i64;
-            let t = roi.t as i64;
-            let r = roi.r as i64;
-            let b = roi.b as i64;
+        if fp * 2 < global_roi.w() && fp * 2 < global_roi.h() {
+            let l = global_roi.l as i64;
+            let t = global_roi.t as i64;
+            let r = global_roi.r as i64;
+            let b = global_roi.b as i64;
             let outer = IntPath::new(vec![
                 IntPoint::from_scaled(l, t),
                 IntPoint::from_scaled(r, t),
@@ -382,8 +463,6 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
         }
     }
 
-    debug_ui::add_ply_im("ply_im", &ply_im);
-
     let (region_im_raw, region_infos): (rcarve::im::Im<u16, 1>, Vec<LabelInfo>) = label_im(&ply_im);
     let region_im: region_tree::RegionIm = region_im_raw.retag::<region_tree::RegionI>();
 
@@ -394,7 +473,6 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
 
     let mut sim_im = Lum16Im::new(w, h);
     sim_im.arr.fill(bulk_top_thou.0 as u16);
-    let before_sim_im = sim_im.clone();
 
     // Rough setup
     let rough_cut_bands = region_tree::create_cut_bands(
@@ -463,15 +541,9 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
         toolpath::break_long_toolpaths(&mut rough_toolpaths, max_segment_len_pix);
         sim::sim_toolpaths(&mut sim_im, &mut rough_toolpaths, None);
         toolpath::cull_empty_toolpaths(&mut rough_toolpaths);
-        let mut rough_traverse_sim_im = before_sim_im.clone();
-        toolpath::add_traverse_toolpaths(&mut rough_traverse_sim_im, &mut rough_toolpaths);
 
         rough_toolpaths
     };
-
-    println!();
-
-    let before_sim_im = sim_im.clone();
 
     // Refine create
     let refine_toolpaths = {
@@ -498,13 +570,17 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
         toolpath::break_long_toolpaths(&mut refine_toolpaths, max_segment_len_pix);
         sim::sim_toolpaths(&mut sim_im, &mut refine_toolpaths, None);
         toolpath::cull_empty_toolpaths(&mut refine_toolpaths);
-        let mut refine_traverse_sim_im = before_sim_im.clone();
-        toolpath::add_traverse_toolpaths(&mut refine_traverse_sim_im, &mut refine_toolpaths);
 
         refine_toolpaths
     };
 
     // Differencer: Compare the results of the idealized product image from the current sim and add tool paths for the differences.
+    let local_roi = ROI {
+        l: 0,
+        t: 0,
+        r: w,
+        b: h,
+    };
     let prod_im = make_prod_im(
         w,
         h,
@@ -512,12 +588,10 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
         &ply_im,
         refine_tool_dia_pix,
         bulk_top_thou,
-        roi,
+        local_roi,
     );
 
     let diff_mask_im = make_diff_im(&sim_im, &prod_im);
-
-    let mut before_sim_im = sim_im.clone();
 
     // Run the refine toolpaths again with the diff_mask to try to clean up the diff areas
     let diff_refine_toolpaths = {
@@ -544,28 +618,42 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
         toolpath::break_long_toolpaths(&mut diff_refine_toolpaths, max_segment_len_pix);
         sim::sim_toolpaths(&mut sim_im, &mut diff_refine_toolpaths, None);
         toolpath::cull_empty_toolpaths(&mut diff_refine_toolpaths);
-        let mut refine_traverse_sim_im = before_sim_im.clone();
-        toolpath::add_traverse_toolpaths(&mut refine_traverse_sim_im, &mut diff_refine_toolpaths);
 
         diff_refine_toolpaths
     };
-
-    debug_ui::add_lum16("prod_im", &prod_im);
-    debug_ui::add_lum16("sim_im", &sim_im);
-    debug_ui::add_mask_im("diff_im", &diff_mask_im);
 
     let mut all_toolpaths = rough_toolpaths;
     all_toolpaths.extend(refine_toolpaths);
     all_toolpaths.extend(diff_refine_toolpaths);
 
-    before_sim_im.arr.fill(bulk_top_thou.0 as u16);
-    debug_ui::add_toolpath_movie("sim toolpath movie", &before_sim_im, &all_toolpaths);
-    debug_ui::show();
+    // Convert ROI-local pixel coords to global pixel coords.
+    let dx: i32 = roi.l.try_into().expect("roi.l too large for i32");
+    let dy: i32 = roi.t.try_into().expect("roi.t too large for i32");
+    translate_toolpaths_in_place(&mut all_toolpaths, dx, dy);
+
+    all_toolpaths
 }
 
 fn main() {
     // Pixels per inch used for conversions between inches and pixels.
     let ppi: usize = 100_usize;
+
+    // Optional CLI args:
+    // - N: grid size for NxN tiling
+    // - workers: max worker threads (defaults to CPU count)
+    // Example: `cargo run --release -- 4 8`
+    // let grid_n: usize = std::env::args()
+    //     .nth(1)
+    //     .and_then(|s| s.parse::<usize>().ok())
+    //     .unwrap_or(1)
+    //     .max(1);
+    let n_workers: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+        .max(1);
+
+    let grid_n: usize = 4;
 
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
 
@@ -590,5 +678,60 @@ fn main() {
         r: ppi * total_w_inch as usize,
         b: ppi * total_h_inch as usize,
     };
-    carve_roi(comp_desc, roi, ppi);
+
+    // Debug UI collector (global). These calls are intended to stay in-place and become no-ops
+    // in production builds by disabling the `debug_ui` feature.
+    debug_ui::init("rcarve debug");
+
+    let rough_tool_guid = comp_desc
+        .carve_desc
+        .rough_tool_guid
+        .as_ref()
+        .expect("No rough tool guid in carve_desc");
+    let (_rough_tool_i, rough_tool_dia_pix) =
+        tool_i_and_dia_pix(&comp_desc.tool_descs, rough_tool_guid, ppi);
+    let overlap_pix = rough_tool_dia_pix;
+
+    let bulk_top_thou = Thou((comp_desc.dim_desc.bulk_d_inch * 1000.0).round() as i32);
+
+    let comp_desc = Arc::new(comp_desc);
+
+    // Split the full ROI into an NxN grid in global pixel space, then pad each tile ROI
+    // by `overlap_pix` on each side (clamped) to ensure overlap.
+    let tile_w = (roi.w() + grid_n - 1) / grid_n;
+    let tile_h = (roi.h() + grid_n - 1) / grid_n;
+
+    let mut tile_rois: Vec<ROI> = Vec::with_capacity(grid_n * grid_n);
+    for gy in 0..grid_n {
+        for gx in 0..grid_n {
+            let base_l = gx * tile_w;
+            let base_t = gy * tile_h;
+            let base_r = ((gx + 1) * tile_w).min(roi.r);
+            let base_b = ((gy + 1) * tile_h).min(roi.b);
+            if base_l >= base_r || base_t >= base_b {
+                continue;
+            }
+
+            let tile_roi = ROI {
+                l: base_l.saturating_sub(overlap_pix),
+                t: base_t.saturating_sub(overlap_pix),
+                r: (base_r + overlap_pix).min(roi.r),
+                b: (base_b + overlap_pix).min(roi.b),
+            };
+
+            tile_rois.push(tile_roi);
+        }
+    }
+
+    let all_toolpaths = carve_rois_in_pool(Arc::clone(&comp_desc), roi, tile_rois, ppi, n_workers);
+    let mut all_toolpaths = all_toolpaths;
+
+    // Add traverse moves after merging, so transitions can span tile boundaries.
+    let mut base_im = Lum16Im::new(roi.w(), roi.h());
+    base_im.arr.fill(bulk_top_thou.0 as u16);
+    let mut sim_for_traverse = base_im.clone();
+    toolpath::add_traverse_toolpaths(&mut sim_for_traverse, &mut all_toolpaths);
+
+    debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths);
+    debug_ui::show();
 }
