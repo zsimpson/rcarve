@@ -11,6 +11,7 @@ use rcarve::toolpath;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 fn tool_i_and_dia_pix(tool_descs: &[ToolDesc], tool_guid: &Guid, ppi: usize) -> (usize, usize) {
     let (tool_i, tool_desc) = tool_descs
@@ -40,8 +41,8 @@ const TEST_JSON: &str = r#"
         "guid": "JGYYJQBHTX",
         "dim_desc": {
             "bulk_d_inch": 1.0,
-            "bulk_w_inch": 20,
-            "bulk_h_inch": 20,
+            "bulk_w_inch": 10,
+            "bulk_h_inch": 10,
             "padding_inch": 0,
             "frame_inch": 0.5
         },
@@ -638,6 +639,8 @@ fn main() {
     // Pixels per inch used for conversions between inches and pixels.
     let ppi: usize = 100_usize;
 
+    let t0 = Instant::now();
+
     // Optional CLI args:
     // - N: grid size for NxN tiling
     // - workers: max worker threads (defaults to CPU count)
@@ -653,6 +656,7 @@ fn main() {
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
         .max(1);
 
+    println!("Using {} worker threads", n_workers);
     let grid_n: usize = 4;
 
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
@@ -731,6 +735,8 @@ fn main() {
     base_im.arr.fill(bulk_top_thou.0 as u16);
     let mut sim_for_traverse = base_im.clone();
     toolpath::add_traverse_toolpaths(&mut sim_for_traverse, &mut all_toolpaths);
+
+    println!("elapsed before movie: {:.3}s", t0.elapsed().as_secs_f64());
 
     debug_ui::add_toolpath_movie("sim toolpath movie", &base_im, &all_toolpaths);
     debug_ui::show();
