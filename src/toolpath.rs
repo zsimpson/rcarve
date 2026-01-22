@@ -218,6 +218,7 @@ pub fn create_toolpaths_from_region_tree(
     pride_thou: Thou,
     ply_im: &PlyIm,
     region_im: &RegionIm,
+    diff_mask_im: Option<&MaskIm>,
     region_infos: &[LabelInfo],
     n_perimeters: usize,
     perimeter_step_size_pix: usize,
@@ -226,6 +227,11 @@ pub fn create_toolpaths_from_region_tree(
 ) -> Vec<ToolPath> {
     let w = region_im.w;
     let h = region_im.h;
+    if let Some(diff_mask_im) = diff_mask_im {
+        assert_eq!(diff_mask_im.w, w, "diff_mask_im.w must match region_im.w");
+        assert_eq!(diff_mask_im.h, h, "diff_mask_im.h must match region_im.h");
+    }
+
     let mut cut_mask_im = MaskIm::new(w, h);
     let mut above_mask_im = MaskIm::new(w, h);
     let mut dil_above_mask_im = MaskIm::new(w, h);
@@ -237,17 +243,28 @@ pub fn create_toolpaths_from_region_tree(
         region_i: RegionI,
         region_infos: &[LabelInfo],
         mask_im: &mut MaskIm,
-    ) {
+        diff_mask_im: Option<&MaskIm>,
+    ) -> usize {
         let label_i = region_i.0 as usize;
         if label_i == 0 || label_i >= region_infos.len() {
-            return;
+            return 0;
         }
+        let mut n_pixels: usize = 0;
         let label_info = &region_infos[label_i];
         for &pix_i in &label_info.pixel_iz {
             if pix_i < mask_im.arr.len() {
-                mask_im.arr[pix_i] = 255;
+                if let Some(diff_mask_im) = diff_mask_im {
+                    if diff_mask_im.arr[pix_i] > 0 {
+                        mask_im.arr[pix_i] = 255;
+                        n_pixels += 1;
+                    }
+                } else {
+                    mask_im.arr[pix_i] = 255;
+                    n_pixels += 1;
+                }
             }
         }
+        n_pixels
     }
 
     // Recurse through the region tree
@@ -265,6 +282,7 @@ pub fn create_toolpaths_from_region_tree(
         margin_pix: usize,
         pride_thou: Thou,
         ply_im: &PlyIm,
+        diff_mask_im: Option<&MaskIm>,
         region_infos: &[LabelInfo],
         paths: &mut Vec<ToolPath>,
         n_perimeters: usize,
@@ -308,6 +326,7 @@ pub fn create_toolpaths_from_region_tree(
 
         let tool_rad_pix = tool_dia_pix / 2;
         let base_rad_pix = tool_rad_pix + margin_pix;
+        let mut n_pixels: usize = 0;
 
         // Splat in the current node's regions.
         // For floors there is 1+, for cuts there is 1. And find the ROI
@@ -318,7 +337,12 @@ pub fn create_toolpaths_from_region_tree(
                 ..
             } => {
                 for region_i in region_iz {
-                    splat_region_i_into_mask_im(*region_i, region_infos, cut_mask_im);
+                    n_pixels += splat_region_i_into_mask_im(
+                        *region_i,
+                        region_infos,
+                        cut_mask_im,
+                        diff_mask_im,
+                    );
 
                     // debug_ui::add_mask_im(
                     //     &format!("{} floor_mask after={} region_i={}", name, z_thou.0, region_i.0),
@@ -346,7 +370,12 @@ pub fn create_toolpaths_from_region_tree(
             } => {
                 z_thou = node_z_thou.clone();
 
-                splat_region_i_into_mask_im(*region_i, region_infos, cut_mask_im);
+                n_pixels += splat_region_i_into_mask_im(
+                    *region_i,
+                    region_infos,
+                    cut_mask_im,
+                    diff_mask_im,
+                );
 
                 let label_i = region_i.0 as usize;
                 assert!(label_i < region_infos.len());
@@ -356,6 +385,13 @@ pub fn create_toolpaths_from_region_tree(
                 curr_ply_i_u16 =
                     ply_im.get_or_default(label_info.start_x, label_info.start_y, 0, 0);
             }
+        }
+
+        // If nothing was splatted into the mask_im, skip this node.
+        // This handles the case in differential mode where the region has
+        // no pixels that align with the cut.
+        if n_pixels == 0 {
+            return;
         }
 
         // Build the above_mask_im by expanding the ROI and copying any ply pixels that
@@ -511,6 +547,7 @@ pub fn create_toolpaths_from_region_tree(
                         margin_pix,
                         pride_thou,
                         ply_im,
+                        diff_mask_im,
                         region_infos,
                         paths,
                         n_perimeters,
@@ -539,6 +576,7 @@ pub fn create_toolpaths_from_region_tree(
             margin_pix,
             pride_thou,
             ply_im,
+            diff_mask_im,
             region_infos,
             &mut paths,
             n_perimeters,
@@ -1457,6 +1495,7 @@ mod tests {
             Thou(0),
             &ply_im,
             &region_im,
+            None,
             &region_infos,
             0,
             1,
@@ -1610,6 +1649,7 @@ mod tests {
             Thou(0),
             &ply_im,
             &region_im,
+            None,
             &region_infos,
             0,
             1,
@@ -1917,6 +1957,7 @@ mod tests {
             Thou(0),
             &ply_im,
             &region_im,
+            None,
             &region_infos,
             0,
             1,
