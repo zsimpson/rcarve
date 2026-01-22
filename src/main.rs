@@ -534,9 +534,9 @@ fn carve_roi(comp_desc: CompDesc, roi: ROI, ppi: usize) {
             &region_im,
             Some(&diff_mask_im),
             &region_infos,
-            1,
+            0,
             (refine_tool_dia_pix.saturating_mul(2) / 5).max(1),
-            false,
+            true,
             None,
         );
 
