@@ -1108,6 +1108,37 @@ mod imp {
                             if let (Some(start), Some(end)) = (pts.first().copied(), pts.last().copied()) {
                                 painter.circle_filled(start, 3.0, egui::Color32::from_rgb(40, 255, 40));
                                 painter.circle_filled(end, 3.0, egui::Color32::from_rgb(40, 160, 255));
+
+                                // If a traverse toolpath changes Z at either endpoint (retract/plunge),
+                                // draw an open ring around the filled marker to indicate vertical motion.
+                                if tp.is_traverse && tp.points.len() >= 2 {
+                                    let ring_r = 5.5;
+                                    let ring_w = 1.25;
+
+                                    // Convention: larger Z means higher/safe (see toolpath::add_traverse_toolpaths).
+                                    let start_dz = tp.points[1].z - tp.points[0].z;
+                                    let last = tp.points.len() - 1;
+                                    let end_dz = tp.points[last].z - tp.points[last - 1].z;
+
+                                    if start_dz != 0 {
+                                        let c = if start_dz > 0 {
+                                            // Z up (retract)
+                                            egui::Color32::from_rgb(40, 255, 40)
+                                        } else {
+                                            // Z down (plunge)
+                                            egui::Color32::from_rgb(40, 160, 255)
+                                        };
+                                        painter.circle_stroke(start, ring_r, egui::Stroke::new(ring_w, c));
+                                    }
+                                    if end_dz != 0 {
+                                        let c = if end_dz > 0 {
+                                            egui::Color32::from_rgb(40, 255, 40)
+                                        } else {
+                                            egui::Color32::from_rgb(40, 160, 255)
+                                        };
+                                        painter.circle_stroke(end, ring_r, egui::Stroke::new(ring_w, c));
+                                    }
+                                }
                             }
                         }
                     }
