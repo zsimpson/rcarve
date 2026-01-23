@@ -670,8 +670,17 @@ mod imp {
                 let h = self.src.h;
                 let Some(tex) = &self.texture else { return };
 
-                let avail_rect = ui.available_rect_before_wrap();
-                let avail = avail_rect.size();
+                // Reserve *layout* space for the header that we place last (top in bottom-up layout),
+                // otherwise it can overlap the image.
+                let header_max_h = 60.0;
+                let header_reserved_h = header_max_h + 8.0;
+                let avail = ui.available_size_before_wrap();
+                let image_area_h = (avail.y - header_reserved_h).max(0.0);
+                let (image_area_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(avail.x, image_area_h),
+                    egui::Sense::hover(),
+                );
+                let avail = image_area_rect.size();
                 let scale = if w == 0 || h == 0 || avail.x <= 0.0 || avail.y <= 0.0 {
                     1.0
                 } else {
@@ -679,13 +688,8 @@ mod imp {
                 };
                 let image_size = egui::vec2((w as f32) * scale, (h as f32) * scale);
 
-                let image_rect = egui::Rect::from_center_size(avail_rect.center(), image_size);
-
-                let response = ui
-                    .scope_builder(egui::UiBuilder::new().max_rect(image_rect), |ui| {
-                        ui.add(egui::Image::new((tex.id(), image_size)))
-                    })
-                    .inner;
+                let image_rect = egui::Rect::from_center_size(image_area_rect.center(), image_size);
+                let response = ui.put(image_rect, egui::Image::new((tex.id(), image_size)));
 
                 if response.hovered() {
                     if let Some(pos) = response.hover_pos() {
@@ -702,25 +706,39 @@ mod imp {
                 }
 
                 // Header (placed last so it appears at the top in bottom-up layout).
-                ui.group(|ui| {
-                    ui.set_min_height(36.0);
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(60.0)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(&self.title);
-                                ui.separator();
-                                monospace_wrap(
-                                    ui,
-                                    format!("mode={:?} mul={:.4}", self.mode, self.params.mul),
-                                );
-                                if !self.hover_text.is_empty() {
-                                    ui.separator();
-                                    monospace_wrap(ui, self.hover_text.clone());
-                                }
-                            });
+                // Allocate a fixed-height region so the text is top-justified.
+                let header_h = header_max_h;
+                let header_w = ui.available_width();
+                let (header_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(header_w, header_h),
+                    egui::Sense::hover(),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_min_size(header_rect.size());
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .max_height(header_rect.height())
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(&self.title);
+                                        ui.separator();
+                                        monospace_wrap(
+                                            ui,
+                                            format!(
+                                                "mode={:?} mul={:.4}",
+                                                self.mode, self.params.mul
+                                            ),
+                                        );
+                                        if !self.hover_text.is_empty() {
+                                            ui.separator();
+                                            monospace_wrap(ui, self.hover_text.clone());
+                                        }
+                                    });
+                                });
                         });
+                    });
                 });
             });
         }
@@ -1038,8 +1056,17 @@ mod imp {
                 let h = self.sim.h;
                 let Some(tex) = &self.texture else { return };
 
-                let avail_rect = ui.available_rect_before_wrap();
-                let avail = avail_rect.size();
+                // Reserve *layout* space for the header that we place last (top in bottom-up layout),
+                // otherwise it can overlap the image and de-sync the overlay transform.
+                let header_max_h = 70.0;
+                let header_reserved_h = header_max_h + 8.0;
+                let avail = ui.available_size_before_wrap();
+                let image_area_h = (avail.y - header_reserved_h).max(0.0);
+                let (image_area_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(avail.x, image_area_h),
+                    egui::Sense::hover(),
+                );
+                let avail = image_area_rect.size();
                 let scale = if w == 0 || h == 0 || avail.x <= 0.0 || avail.y <= 0.0 {
                     1.0
                 } else {
@@ -1047,13 +1074,8 @@ mod imp {
                 };
                 let image_size = egui::vec2((w as f32) * scale, (h as f32) * scale);
 
-                let image_rect = egui::Rect::from_center_size(avail_rect.center(), image_size);
-
-                let response = ui
-                    .scope_builder(egui::UiBuilder::new().max_rect(image_rect), |ui| {
-                        ui.add(egui::Image::new((tex.id(), image_size)))
-                    })
-                    .inner;
+                let image_rect = egui::Rect::from_center_size(image_area_rect.center(), image_size);
+                let response = ui.put(image_rect, egui::Image::new((tex.id(), image_size)));
 
                 // Overlay the active toolpath polyline.
                 if let Some(tp_i) = self.active_toolpath_index() {
@@ -1106,77 +1128,90 @@ mod imp {
                 }
 
                 // Header (placed last so it appears at the top in bottom-up layout).
-                ui.group(|ui| {
-                    ui.set_min_height(36.0);
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(70.0)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(&self.title);
-                                ui.separator();
+                // Allocate a fixed-height region so the text is top-justified.
+                let header_h = header_max_h;
+                let header_w = ui.available_width();
+                let (header_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(header_w, header_h),
+                    egui::Sense::hover(),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(header_rect), |ui| {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_min_size(header_rect.size());
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .max_height(header_rect.height())
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(&self.title);
+                                        ui.separator();
 
-                                let len = self.toolpath_len();
-                                match self.active_toolpath_index() {
-                                    Some(i) => {
-                                        monospace_wrap(
-                                            ui,
-                                            format!(
-                                                "toolpath={i}/{last} (applied={}/{len})",
-                                                self.applied_count,
-                                                last = len.saturating_sub(1)
-                                            ),
-                                        );
+                                        let len = self.toolpath_len();
+                                        match self.active_toolpath_index() {
+                                            Some(i) => {
+                                                monospace_wrap(
+                                                    ui,
+                                                    format!(
+                                                        "toolpath={i}/{last} (applied={}/{len})",
+                                                        self.applied_count,
+                                                        last = len.saturating_sub(1)
+                                                    ),
+                                                );
 
-                                        if let Some(tp) = self.movie_toolpaths.get(i) {
-                                            ui.separator();
-                                            monospace_wrap(
-                                                ui,
-                                                format!("is_traverse={}", tp.is_traverse),
-                                            );
+                                                if let Some(tp) = self.movie_toolpaths.get(i) {
+                                                    ui.separator();
+                                                    monospace_wrap(
+                                                        ui,
+                                                        format!("is_traverse={}", tp.is_traverse),
+                                                    );
 
-                                            ui.separator();
-                                            monospace_wrap(
-                                                ui,
-                                                format!(
-                                                    "tool_dia_pix={} tool_i={} tree_node_id={}",
-                                                    tp.tool_dia_pix, tp.tool_i, tp.tree_node_id
-                                                ),
-                                            );
+                                                    ui.separator();
+                                                    monospace_wrap(
+                                                        ui,
+                                                        format!(
+                                                            "tool_dia_pix={} tool_i={} tree_node_id={}"
+                                                            ,
+                                                            tp.tool_dia_pix, tp.tool_i, tp.tree_node_id
+                                                        ),
+                                                    );
 
-                                            ui.separator();
-                                            let mut cut_pixels: u64 = 0;
-                                            let mut cut_depth_sum_thou: u64 = 0;
-                                            for c in tp.cuts.iter() {
-                                                cut_pixels += c.pixels_changed;
-                                                cut_depth_sum_thou += c.depth_sum_thou;
+                                                    ui.separator();
+                                                    let mut cut_pixels: u64 = 0;
+                                                    let mut cut_depth_sum_thou: u64 = 0;
+                                                    for c in tp.cuts.iter() {
+                                                        cut_pixels += c.pixels_changed;
+                                                        cut_depth_sum_thou += c.depth_sum_thou;
+                                                    }
+                                                    monospace_wrap(
+                                                        ui,
+                                                        format!(
+                                                            "cut_pixels={} cut_depth_sum_thou={}"
+                                                            ,
+                                                            cut_pixels, cut_depth_sum_thou
+                                                        ),
+                                                    );
+                                                }
                                             }
-                                            monospace_wrap(
-                                                ui,
-                                                format!(
-                                                    "cut_pixels={} cut_depth_sum_thou={}",
-                                                    cut_pixels, cut_depth_sum_thou
-                                                ),
-                                            );
+                                            None => {
+                                                monospace_wrap(
+                                                    ui,
+                                                    format!("toolpath=none (applied=0/{len})"),
+                                                );
+                                            }
+                                        };
+
+                                        ui.separator();
+                                        monospace_wrap(ui, format!("mul={:.4}", self.params.mul));
+
+                                        if !self.hover_text.is_empty() {
+                                            ui.separator();
+                                            monospace_wrap(ui, self.hover_text.clone());
                                         }
-                                    }
-                                    None => {
-                                        monospace_wrap(
-                                            ui,
-                                            format!("toolpath=none (applied=0/{len})"),
-                                        );
-                                    }
-                                };
-
-                                ui.separator();
-                                monospace_wrap(ui, format!("mul={:.4}", self.params.mul));
-
-                                if !self.hover_text.is_empty() {
-                                    ui.separator();
-                                    monospace_wrap(ui, self.hover_text.clone());
-                                }
-                            });
+                                    });
+                                });
                         });
+                    });
                 });
             });
         }
