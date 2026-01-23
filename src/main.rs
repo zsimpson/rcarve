@@ -8,6 +8,7 @@ use rcarve::region_tree;
 use rcarve::sim;
 use rcarve::toolpath;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -297,6 +298,41 @@ fn translate_toolpaths_in_place(toolpaths: &mut [toolpath::ToolPath], dx: i32, d
             p.y = p.y.checked_add(dy).expect("toolpath y overflow");
         }
     }
+}
+
+fn regroup_toolpaths_by_tool(mut toolpaths: Vec<toolpath::ToolPath>) -> Vec<toolpath::ToolPath> {
+    if toolpaths.is_empty() {
+        return toolpaths;
+    }
+
+    // Group toolpaths by tool, and order tools from largest -> smallest.
+    // Preserve the relative order of toolpaths within each tool group.
+    let mut toolpaths_by_tool: HashMap<usize, Vec<toolpath::ToolPath>> = HashMap::new();
+    let mut tool_dia_by_tool: HashMap<usize, usize> = HashMap::new();
+
+    for tp in toolpaths.drain(..) {
+        tool_dia_by_tool
+            .entry(tp.tool_i)
+            .and_modify(|d| *d = (*d).max(tp.tool_dia_pix))
+            .or_insert(tp.tool_dia_pix);
+        toolpaths_by_tool.entry(tp.tool_i).or_default().push(tp);
+    }
+
+    let mut tools: Vec<(usize, usize)> = tool_dia_by_tool
+        .iter()
+        .map(|(&tool_i, &tool_dia_pix)| (tool_dia_pix, tool_i))
+        .collect();
+
+    // Largest diameter first; stable-ish tie-break by tool index.
+    tools.sort_by(|(dia_a, tool_a), (dia_b, tool_b)| dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b)));
+
+    let mut out: Vec<toolpath::ToolPath> = Vec::new();
+    for (_tool_dia_pix, tool_i) in tools {
+        if let Some(mut tps) = toolpaths_by_tool.remove(&tool_i) {
+            out.append(&mut tps);
+        }
+    }
+    out
 }
 
 fn carve_rois_in_pool(
@@ -728,7 +764,33 @@ fn main() {
     }
 
     let all_toolpaths = carve_rois_in_pool(Arc::clone(&comp_desc), roi, tile_rois, ppi, n_workers);
-    let mut all_toolpaths = all_toolpaths;
+    let mut all_toolpaths = regroup_toolpaths_by_tool(all_toolpaths);
+
+    // Helpful summary: what tools ended up in the final sequence.
+    {
+        let mut counts: HashMap<usize, (usize, usize)> = HashMap::new();
+        // tool_i -> (tool_dia_pix, count)
+        for tp in &all_toolpaths {
+            counts
+                .entry(tp.tool_i)
+                .and_modify(|(dia, c)| {
+                    *dia = (*dia).max(tp.tool_dia_pix);
+                    *c += 1;
+                })
+                .or_insert((tp.tool_dia_pix, 1));
+        }
+        let mut tools: Vec<(usize, usize, usize)> = counts
+            .into_iter()
+            .map(|(tool_i, (tool_dia_pix, count))| (tool_dia_pix, tool_i, count))
+            .collect();
+        tools.sort_by(|(dia_a, tool_a, _), (dia_b, tool_b, _)| {
+            dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b))
+        });
+        println!("Tool grouping order (largest->smallest):");
+        for (tool_dia_pix, tool_i, count) in tools {
+            println!("  tool_i={tool_i} tool_dia_pix={tool_dia_pix} toolpaths={count}");
+        }
+    }
 
     // Add traverse moves after merging, so transitions can span tile boundaries.
     let mut base_im = Lum16Im::new(roi.w(), roi.h());
