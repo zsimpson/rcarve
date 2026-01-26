@@ -300,39 +300,39 @@ fn translate_toolpaths_in_place(toolpaths: &mut [toolpath::ToolPath], dx: i32, d
     }
 }
 
-fn regroup_toolpaths_by_tool(mut toolpaths: Vec<toolpath::ToolPath>) -> Vec<toolpath::ToolPath> {
-    if toolpaths.is_empty() {
-        return toolpaths;
-    }
+fn regroup_toolpaths_by_tool(mut toolpaths: Vec<toolpath::ToolPath>) -> HashMap<usize, Vec<toolpath::ToolPath>> {
+    // if toolpaths.is_empty() {
+    //     return toolpaths;
+    // }
 
     // Group toolpaths by tool, and order tools from largest -> smallest.
     // Preserve the relative order of toolpaths within each tool group.
-    let mut toolpaths_by_tool: HashMap<usize, Vec<toolpath::ToolPath>> = HashMap::new();
-    let mut tool_dia_by_tool: HashMap<usize, usize> = HashMap::new();
+    let mut toolpaths_by_tool_i: HashMap<usize, Vec<toolpath::ToolPath>> = HashMap::new();
 
     for tp in toolpaths.drain(..) {
-        tool_dia_by_tool
-            .entry(tp.tool_i)
-            .and_modify(|d| *d = (*d).max(tp.tool_dia_pix))
-            .or_insert(tp.tool_dia_pix);
-        toolpaths_by_tool.entry(tp.tool_i).or_default().push(tp);
+        // tool_dia_by_tool_i
+        //     .entry(tp.tool_i)
+        //     .and_modify(|d| *d = (*d).max(tp.tool_dia_pix))
+        //     .or_insert(tp.tool_dia_pix);
+        toolpaths_by_tool_i.entry(tp.tool_i).or_default().push(tp);
     }
 
-    let mut tools: Vec<(usize, usize)> = tool_dia_by_tool
-        .iter()
-        .map(|(&tool_i, &tool_dia_pix)| (tool_dia_pix, tool_i))
-        .collect();
+    // let mut tools: Vec<(usize, usize)> = tool_dia_by_tool_i
+    //     .iter()
+    //     .map(|(&tool_i, &tool_dia_pix)| (tool_dia_pix, tool_i))
+    //     .collect();
 
     // Largest diameter first; stable-ish tie-break by tool index.
-    tools.sort_by(|(dia_a, tool_a), (dia_b, tool_b)| dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b)));
+    // tools.sort_by(|(dia_a, tool_a), (dia_b, tool_b)| dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b)));
 
-    let mut out: Vec<toolpath::ToolPath> = Vec::new();
-    for (_tool_dia_pix, tool_i) in tools {
-        if let Some(mut tps) = toolpaths_by_tool.remove(&tool_i) {
-            out.append(&mut tps);
-        }
-    }
-    out
+    // let mut out: Vec<toolpath::ToolPath> = Vec::new();
+    // for (_tool_dia_pix, tool_i) in tools {
+    //     if let Some(mut tps) = toolpaths_by_tool_i.remove(&tool_i) {
+    //         out.append(&mut tps);
+    //     }
+    // }
+    // out
+    toolpaths_by_tool_i
 }
 
 fn carve_rois_in_pool(
@@ -764,39 +764,94 @@ fn main() {
     }
 
     let all_toolpaths = carve_rois_in_pool(Arc::clone(&comp_desc), roi, tile_rois, ppi, n_workers);
-    let mut all_toolpaths = regroup_toolpaths_by_tool(all_toolpaths);
+
+    let mut toolpaths_by_tool_i = regroup_toolpaths_by_tool(all_toolpaths);
 
     // Helpful summary: what tools ended up in the final sequence.
-    {
-        let mut counts: HashMap<usize, (usize, usize)> = HashMap::new();
-        // tool_i -> (tool_dia_pix, count)
-        for tp in &all_toolpaths {
-            counts
-                .entry(tp.tool_i)
-                .and_modify(|(dia, c)| {
-                    *dia = (*dia).max(tp.tool_dia_pix);
-                    *c += 1;
-                })
-                .or_insert((tp.tool_dia_pix, 1));
-        }
-        let mut tools: Vec<(usize, usize, usize)> = counts
-            .into_iter()
-            .map(|(tool_i, (tool_dia_pix, count))| (tool_dia_pix, tool_i, count))
-            .collect();
-        tools.sort_by(|(dia_a, tool_a, _), (dia_b, tool_b, _)| {
-            dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b))
-        });
-        println!("Tool grouping order (largest->smallest):");
-        for (tool_dia_pix, tool_i, count) in tools {
-            println!("  tool_i={tool_i} tool_dia_pix={tool_dia_pix} toolpaths={count}");
-        }
-    }
+    // let tools: Vec<(usize, usize, usize)> = {
+    //     let mut counts: HashMap<usize, (usize, usize)> = HashMap::new();
+    //     // tool_i -> (tool_dia_pix, count)
+    //     for tp in &all_toolpaths {
+    //         counts
+    //             .entry(tp.tool_i)
+    //             .and_modify(|(dia, c)| {
+    //                 *dia = (*dia).max(tp.tool_dia_pix);
+    //                 *c += 1;
+    //             })
+    //             .or_insert((tp.tool_dia_pix, 1));
+    //     }
+    //     let mut tools: Vec<(usize, usize, usize)> = counts
+    //         .into_iter()
+    //         .map(|(tool_i, (tool_dia_pix, count))| (tool_dia_pix, tool_i, count))
+    //         .collect();
+    //     tools.sort_by(|(dia_a, tool_a, _), (dia_b, tool_b, _)| {
+    //         dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b))
+    //     });
+    //     tools
+    // };
+
+    // println!("Tool grouping order (largest->smallest):");
+    // for &(tool_dia_pix, tool_i, count) in &tools {
+    //     println!("  tool_i={tool_i} tool_dia_pix={tool_dia_pix} toolpaths={count}");
+    // }
 
     // Add traverse moves after merging, so transitions can span tile boundaries.
     let mut base_im = Lum16Im::new(roi.w(), roi.h());
     base_im.arr.fill(bulk_top_thou.0 as u16);
-    let mut sim_for_traverse = base_im.clone();
-    toolpath::add_traverse_toolpaths(&mut sim_for_traverse, &mut all_toolpaths);
+    let mut sim_im_for_traverse = base_im.clone();
+    // toolpath::add_traverse_toolpaths(&mut sim_im_for_traverse, &mut all_toolpaths);
+
+    // for &(tool_dia_pix, tool_i, _count) in &tools {
+    //     let _new_toolpaths = toolpath::add_traverse_toolpaths_one_tool(
+    //         &mut sim_im_for_traverse,
+    //         &mut all_toolpaths,
+    //         tool_i,
+    //         tool_dia_pix,
+    //     );
+    // }
+
+    let n_total_toolpaths: usize = toolpaths_by_tool_i.values().map(|tps| tps.len()).sum();
+
+    // Deterministic tool processing order (largest diameter first, then tool_i).
+    let mut tools: Vec<(usize, usize)> = toolpaths_by_tool_i
+        .iter()
+        .map(|(&tool_i, toolpaths)| {
+            let tool_dia_pix = toolpaths
+                .first()
+                .map(|tp| tp.tool_dia_pix)
+                .expect("toolpaths should not be empty for tool_i");
+            (tool_dia_pix, tool_i)
+        })
+        .collect();
+    tools.sort_by(|(dia_a, tool_a), (dia_b, tool_b)| dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b)));
+
+    // Each toolpath (except the last for a tool) has a traverse after it.
+    // Total entries = sum_k (toolpaths_k + traverses_k) = sum_k (2*toolpaths_k - 1).
+    let mut all_toolpaths = Vec::with_capacity(n_total_toolpaths * 2);
+    for (tool_dia_pix, tool_i) in tools {
+        let mut toolpaths = toolpaths_by_tool_i
+            .remove(&tool_i)
+            .expect("tool_i should exist in map");
+
+        let traverse_toolpaths = toolpath::add_traverse_toolpaths_one_tool(
+            &mut sim_im_for_traverse,
+            &mut toolpaths,
+            tool_i,
+            tool_dia_pix,
+        );
+        
+        assert!(toolpaths.len() == traverse_toolpaths.len() + 1);
+
+        // Interleave: toolpath0, traverse0, toolpath1, traverse1, ..., toolpathN.
+        let mut toolpaths_iter = toolpaths.into_iter();
+        let mut traverses_iter = traverse_toolpaths.into_iter();
+        while let Some(tp) = toolpaths_iter.next() {
+            all_toolpaths.push(tp);
+            if let Some(trav) = traverses_iter.next() {
+                all_toolpaths.push(trav);
+            }
+        }
+    }
 
     println!("elapsed before movie: {:.3}s", t0.elapsed().as_secs_f64());
 

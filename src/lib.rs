@@ -4,16 +4,17 @@
 // Keeping modules here prevents "dead_code" warnings for public APIs that are
 // intentionally exported for downstream crates.
 
-pub mod im;
+pub mod bucket_vec;
+pub mod debug_ui;
 pub mod desc;
+pub mod dilate_im;
+pub mod im;
+pub mod mat3;
+pub mod mpoly;
 pub mod region_tree;
+pub mod sim;
 pub mod toolpath;
 pub mod trace;
-pub mod mpoly;
-pub mod dilate_im;
-pub mod mat3;
-pub mod sim;
-pub mod debug_ui;
 
 #[cfg(test)]
 pub mod test_helpers;
