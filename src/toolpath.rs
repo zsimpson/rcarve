@@ -8,7 +8,6 @@ use crate::im::label::LabelInfo;
 use crate::im::{Im, MaskIm};
 use crate::region_tree::{CutBand, PlyIm, RegionI, RegionIm, RegionNode, RegionRoot};
 use crate::trace::{Contour, contours_by_suzuki_abe};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IV3 {
@@ -1265,259 +1264,8 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
 }
 
 
-fn traverse_verts(from:IV3, to:IV3, safe_z:i32) -> Vec<IV3> {
-    vec![
-        IV3 {
-            x: from.x,
-            y: from.y,
-            z: from.z,
-        },
-        IV3 {
-            x: from.x,
-            y: from.y,
-            z: safe_z,
-        },
-        IV3 {
-            x: to.x,
-            y: to.y,
-            z: to.z,
-        },
-    ]
-}
-
-
-
-/// Insert explicit “travel” (air-move) toolpaths between consecutive cutting toolpaths.
 ///
-/// ## Why this exists
-/// Toolpaths produced by raster/perimeter generation are contiguous only within each path.
-/// Between `all_toolpaths[i]` and `all_toolpaths[i+1]` the machine still needs to move from
-/// the end point of the first path to the start point of the next path.
-///
-/// This function computes a *safe retract height* for that move by scanning the simulated
-/// material heightfield along the straight-line XY traverse, using a circular tool footprint.
-/// It then inserts a minimal polyline:
-///
-/// 1) retract in Z at the current XY to `safe_z`
-/// 2) traverse in XY at `safe_z`
-/// 3) plunge in Z at the destination XY to the next path’s start Z
-///
-/// The inserted toolpaths have `is_traverse = true` and should be treated as non-cutting.
-///
-/// ## Inputs / side effects
-/// - `sim_im` is mutated because we re-run simulation to compute clearance against the
-///   *intermediate* state after each toolpath.
-/// - `all_toolpaths` is replaced with a new list containing the original toolpaths plus
-///   optional inserted traverse toolpaths.
-///
-/// ## Safety model
-/// - Clearance uses the *larger* of the two adjacent tool diameters (conservative).
-/// - `safe_z = max(heightfield_max_along_segment, from.z, to.z)` so we never command a
-///   traverse below either endpoint’s commanded Z.
-pub fn add_traverse_toolpaths(sim_im: &mut crate::im::Lum16Im, all_toolpaths: &mut Vec<ToolPath>) {
-    if all_toolpaths.len() < 2 {
-        return;
-    }
-
-    // Precompute boundary transitions so we can run simulation with a callback without
-    // borrowing `all_toolpaths` inside the callback.
-    #[derive(Clone, Copy, Debug)]
-    struct Transition {
-        from: IV3,
-        to: IV3,
-        radius_pix: usize,
-        tool_i: usize,
-        tool_dia_pix: usize,
-        tree_node_id: usize,
-    }
-
-    // For each toolpath, record the index of its final segment.
-    // A toolpath with N points has N-1 segments, indexed 0..(N-2).
-    // We use this to trigger the clearance scan exactly once per toolpath boundary.
-    let mut last_seg_i: Vec<Option<usize>> = Vec::with_capacity(all_toolpaths.len());
-    for tp in all_toolpaths.iter() {
-        if tp.points.len() >= 2 {
-            last_seg_i.push(Some(tp.points.len() - 2));
-        } else {
-            last_seg_i.push(None);
-        }
-    }
-
-    // Build a boundary-transition record for each adjacent pair (a -> b).
-    // If either side has no endpoints, we store `None` and skip insertion.
-    let mut transitions: Vec<Option<Transition>> = Vec::with_capacity(all_toolpaths.len() - 1);
-    for i in 0..(all_toolpaths.len() - 1) {
-        let a = &all_toolpaths[i];
-        let b = &all_toolpaths[i + 1];
-        let (Some(from), Some(to)) = (a.points.last().copied(), b.points.first().copied()) else {
-            transitions.push(None);
-            continue;
-        };
-
-        // Use the larger diameter so our clearance scan is conservative.
-        let dia = a.tool_dia_pix.max(b.tool_dia_pix);
-        let radius_pix = dia / 2;
-        transitions.push(Some(Transition {
-            from,
-            to,
-            radius_pix,
-            tool_i: a.tool_i,
-            tool_dia_pix: dia,
-            tree_node_id: a.tree_node_id,
-        }));
-    }
-
-    // We fill this during simulation when we reach the end of toolpath i.
-    let mut safe_z_by_transition: Vec<Option<i32>> = vec![None; transitions.len()];
-
-    // Re-simulate from the base image so we can compute traverse heights against the
-    // correct intermediate state after each toolpath.
-
-    // Cache circle footprints (pixel offsets) by radius to avoid repeated allocations.
-    let mut circle_lut_by_radius: HashMap<usize, Vec<isize>> = HashMap::new();
-
-    // Simulation callback:
-    // `sim_toolpaths` iterates segments in order and updates `im` as it applies material removal.
-    // We hook the moment we finish toolpath i (its last segment) to compute a safe traverse height
-    // for the *next* boundary i -> i+1 against the correct intermediate `im` state.
-    let mut callback = |im: &crate::im::Lum16Im,
-                        toolpath_i: usize,
-                        seg_i: usize,
-                        _p0: IV3,
-                        p1: IV3,
-                        _seg_cut: CutPixels| {
-        if toolpath_i >= transitions.len() {
-            return;
-        }
-
-        let Some(expected_last_seg) = last_seg_i.get(toolpath_i).and_then(|v| *v) else {
-            return;
-        };
-        // Only compute clearance at the end of the toolpath (once per boundary).
-        if seg_i != expected_last_seg {
-            return;
-        }
-
-        let Some(tr) = transitions[toolpath_i] else {
-            return;
-        };
-
-        // Sanity: ensure we are using the actual end point of this toolpath.
-        // `p1` is the endpoint of the last simulated segment; its XY is the authoritative end.
-        // Keep the original Z from `tr.from` (the toolpath command), not necessarily `p1.z`.
-        let from = IV3 {
-            x: p1.x,
-            y: p1.y,
-            z: tr.from.z,
-        };
-
-        let circle = circle_lut_by_radius
-            .entry(tr.radius_pix)
-            .or_insert_with(|| crate::sim::circle_pixel_iz(tr.radius_pix, im.s));
-
-        // Scan the heightfield along the intended straight-line traverse from end->start,
-        // considering the tool footprint. We need the maximum height encountered.
-        let max_u16 =
-            crate::sim::scan_toolpath_segment_max_u16(im, from, tr.to, tr.radius_pix, circle);
-        let max_i32 = max_u16 as i32;
-
-        // Safe traverse height: above everything encountered AND not below either endpoint.
-        let safe = max_i32.max(tr.from.z).max(tr.to.z);
-        safe_z_by_transition[toolpath_i] = Some(safe);
-    };
-
-    crate::sim::sim_toolpaths(sim_im, &mut all_toolpaths[..], Some(&mut callback));
-
-    // Now splice in traversal toolpaths.
-    // Note: we keep the original toolpaths (clone) and insert an additional open polyline after
-    // each toolpath i if we were able to compute a safe_z for the boundary i -> i+1.
-    let mut out: Vec<ToolPath> = Vec::with_capacity(all_toolpaths.len() * 2);
-    for i in 0..all_toolpaths.len() {
-        out.push(all_toolpaths[i].clone());
-
-        if i >= transitions.len() {
-            continue;
-        }
-
-        let Some(tr) = transitions[i] else {
-            continue;
-        };
-        let Some(safe_z) = safe_z_by_transition[i] else {
-            continue;
-        };
-
-        let from = tr.from;
-        let to = tr.to;
-
-        // Build a minimal retract -> traverse -> plunge polyline.
-        // We intentionally keep this as short as possible to avoid surprising downstream consumers.
-        let mut pts: Vec<IV3> = Vec::with_capacity(4);
-        pts.push(from);
-
-        // Retract at current XY.
-        if from.z != safe_z {
-            pts.push(IV3 {
-                x: from.x,
-                y: from.y,
-                z: safe_z,
-            });
-        }
-
-        // XY traverse at safe Z.
-        if from.x != to.x || from.y != to.y {
-            // Ensure we are at safe Z before traversing.
-            if pts.last().copied().unwrap_or(from).z != safe_z {
-                pts.push(IV3 {
-                    x: from.x,
-                    y: from.y,
-                    z: safe_z,
-                });
-            }
-            pts.push(IV3 {
-                x: to.x,
-                y: to.y,
-                z: safe_z,
-            });
-        }
-
-        // Ensure we are at target XY before plunging.
-        let last = pts.last().copied().unwrap_or(from);
-        if last.x != to.x || last.y != to.y || last.z != safe_z {
-            pts.push(IV3 {
-                x: to.x,
-                y: to.y,
-                z: safe_z,
-            });
-        }
-
-        // Plunge at target XY.
-        if to.z != safe_z {
-            pts.push(to);
-        }
-
-        // Clean up any accidental duplicates caused by the conditional point pushes above.
-        pts.dedup();
-        if pts.len() < 2 {
-            continue;
-        }
-
-        out.push(ToolPath {
-            cuts: vec![CutPixels::default(); pts.len()],
-            points: pts,
-            closed: false,
-            tool_dia_pix: tr.tool_dia_pix,
-            tool_i: tr.tool_i,
-            tree_node_id: tr.tree_node_id,
-            is_traverse: true,
-            is_raster: false,
-        });
-    }
-
-    *all_toolpaths = out;
-}
-
-///
-/// Insert explicit “travel” (air-move) toolpaths between consecutive cutting toolpaths
+/// Insert explicit "traverse"" (air-move) toolpaths between consecutive cutting toolpaths
 /// Args:
 ///   - befpre_sim_im: A Lum16Im that contains the starting state for simulation (all pixels are full height)
 ///   - toolpaths: A borrowed vector of ToolPath structs representing the cutting toolpaths. Must all be of the same tool
@@ -1552,7 +1300,14 @@ pub fn add_traverse_toolpaths_one_tool<'a>(
         .iter()
         .map(|tp| tp.points.first().copied())
         .collect();
-    let toolpath_ends: Vec<Option<IV3>> = toolpaths.iter().map(|tp| tp.points.last().copied()).collect();
+    let toolpath_ends: Vec<Option<IV3>> = toolpaths
+        .iter()
+        .map(|tp| tp.points.last().copied())
+        .collect();
+    let toolpath_is_rasters: Vec<bool> = toolpaths
+        .iter()
+        .map(|tp| tp.is_raster)
+        .collect();
 
     let mut callback = |im: &crate::im::Lum16Im,
                         toolpath_i: usize,
@@ -1563,14 +1318,10 @@ pub fn add_traverse_toolpaths_one_tool<'a>(
         let Some(&(tp_tool_i, tp_tool_dia_pix, tp_points_len)) = tool_meta.get(toolpath_i) else {
             return;
         };
+
         if tp_tool_i != tool_i {
             return;
         }
-
-        assert_eq!(
-            tp_tool_dia_pix, tool_dia_pix,
-            "Tool diameter mismatch for tool_i={tool_i}"
-        );
 
         let last_seg_i = tp_points_len.saturating_sub(2);
         if seg_i != last_seg_i {
@@ -1580,20 +1331,98 @@ pub fn add_traverse_toolpaths_one_tool<'a>(
         // The end point of the last segment is the toolpath's final point.
         debug_assert_eq!(toolpath_ends.get(toolpath_i).copied().flatten(), Some(p1));
 
-        // This is the transition we care about when inserting a traverse toolpath.
-        let from_vert: IV3 = p1;
-        let to_vert_opt: Option<IV3> = toolpath_starts.get(toolpath_i + 1).copied().flatten();
-        let Some(to_vert) = to_vert_opt else {
-            return;
-        };
+        // Tool diameter must match. 
+        debug_assert_eq!(
+            tp_tool_dia_pix, tool_dia_pix,
+            "Tool diameter mismatch for tool_i={tool_i}"
+        );
 
-        let safe_z =
-            crate::sim::scan_toolpath_segment_max_u16(im, from_vert, to_vert, tool_radius_pix, &circle_pix);
+        // If we're transitioning between two raster toolpaths, each raster toolpath is a single
+        // segment. If the segments overlap in X and are within one tool diameter in Y, we can
+        // generate a special traverse polyline (e.g. backtrack) instead of retracting.
+        let max_distance_to_backtrack_pix = tool_dia_pix as u32 * 2;
 
-        let new_verts = traverse_verts(from_vert, to_vert, safe_z as i32);
-        let n_verts = new_verts.len();
+        let mut traverse_verts_opt: Option<Vec<IV3>> = None;
+
+        if toolpath_i < n_toolpaths - 1 && toolpath_is_rasters[toolpath_i] && toolpath_is_rasters[toolpath_i + 1] {
+            if let (Some(a0), Some(a1), Some(b0), Some(b1)) = (
+                toolpath_starts.get(toolpath_i).copied().flatten(),
+                toolpath_ends.get(toolpath_i).copied().flatten(),
+                toolpath_starts.get(toolpath_i + 1).copied().flatten(),
+                toolpath_ends.get(toolpath_i + 1).copied().flatten(),
+            ) {
+                debug_assert!(a0.y == a1.y && b0.y == b1.y, "Raster toolpaths should be horizontal");
+                debug_assert!(a0.z == a1.z && b0.z == b1.z, "Raster toolpaths should be constant-Z");
+
+                if a1.z == b0.z {
+                    let lft = a0.x.min(a1.x); 
+                    let rgt = a0.x.max(a1.x);
+                    let delta_x = b0.x.abs_diff(a1.x);
+
+                    if lft <= b0.x && b0.x <= rgt && delta_x <= max_distance_to_backtrack_pix {
+                        traverse_verts_opt = Some(vec![
+                            IV3 {
+                                x: b0.x,
+                                y: a1.y,
+                                z: a1.z,
+                            },
+                            IV3 {
+                                x: b0.x,
+                                y: b0.y,
+                                z: b0.z,
+                            },
+                        ]);
+                    }
+                }
+            }
+        }
+
+        traverse_verts_opt = traverse_verts_opt.or_else(|| {
+            // Raster backtrack was not possible so we need a full retract-traverse-plunge.
+            let from_vert: IV3 = p1;
+            let to_vert_opt: Option<IV3> = toolpath_starts.get(toolpath_i + 1).copied().flatten();
+            let Some(to_vert) = to_vert_opt else {
+                return Some(Vec::new());
+            };
+
+            // Compute the minimum safe Z to traverse between from_vert and to_vert.
+            let mut safe_z_i32 = crate::sim::scan_toolpath_segment_max_u16(
+                im,
+                from_vert,
+                to_vert,
+                tool_radius_pix,
+                &circle_pix,
+            ) as i32;
+
+            // Never traverse below either endpoint's commanded Z.
+            safe_z_i32 = safe_z_i32.max(from_vert.z).max(to_vert.z);
+
+            Some(vec![
+                IV3 {
+                    x: from_vert.x,
+                    y: from_vert.y,
+                    z: from_vert.z,
+                },
+                IV3 {
+                    x: from_vert.x,
+                    y: from_vert.y,
+                    z: safe_z_i32,
+                },
+                IV3 {
+                    x: to_vert.x,
+                    y: to_vert.y,
+                    z: to_vert.z,
+                },
+            ])
+
+        });
+
+        let traverse_verts = traverse_verts_opt.unwrap_or_default();
+
+        let n_verts = traverse_verts.len();
+
         traverse_paths.push(ToolPath {
-            points: new_verts,
+            points: traverse_verts,
             closed: false,
             tool_dia_pix,
             tool_i,

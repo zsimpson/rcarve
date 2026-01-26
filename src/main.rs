@@ -42,8 +42,8 @@ const TEST_JSON: &str = r#"
         "guid": "JGYYJQBHTX",
         "dim_desc": {
             "bulk_d_inch": 1.0,
-            "bulk_w_inch": 10,
-            "bulk_h_inch": 10,
+            "bulk_w_inch": 4,
+            "bulk_h_inch": 4,
             "padding_inch": 0,
             "frame_inch": 0.5
         },
@@ -347,7 +347,7 @@ fn carve_rois_in_pool(
     }
 
     let n_workers = n_workers.max(1).min(tile_rois.len());
-
+    
     // Jobs are (tile_index, ROI); send `None` as a stop signal.
     let (job_tx, job_rx) = mpsc::channel::<Option<(usize, ROI)>>();
     let job_rx = Arc::new(Mutex::new(job_rx));
@@ -692,7 +692,12 @@ fn main() {
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
         .max(1);
 
+    // Debugging hack limit to one
+    // let n_workers = 1;
+
     println!("Using {} worker threads", n_workers);
+    
+    // TODO compute a good grid_n dynamically
     let grid_n: usize = 4;
 
     let comp_desc = parse_comp_json(TEST_JSON).expect("Failed to parse comp JSON");
@@ -767,48 +772,10 @@ fn main() {
 
     let mut toolpaths_by_tool_i = regroup_toolpaths_by_tool(all_toolpaths);
 
-    // Helpful summary: what tools ended up in the final sequence.
-    // let tools: Vec<(usize, usize, usize)> = {
-    //     let mut counts: HashMap<usize, (usize, usize)> = HashMap::new();
-    //     // tool_i -> (tool_dia_pix, count)
-    //     for tp in &all_toolpaths {
-    //         counts
-    //             .entry(tp.tool_i)
-    //             .and_modify(|(dia, c)| {
-    //                 *dia = (*dia).max(tp.tool_dia_pix);
-    //                 *c += 1;
-    //             })
-    //             .or_insert((tp.tool_dia_pix, 1));
-    //     }
-    //     let mut tools: Vec<(usize, usize, usize)> = counts
-    //         .into_iter()
-    //         .map(|(tool_i, (tool_dia_pix, count))| (tool_dia_pix, tool_i, count))
-    //         .collect();
-    //     tools.sort_by(|(dia_a, tool_a, _), (dia_b, tool_b, _)| {
-    //         dia_b.cmp(dia_a).then_with(|| tool_a.cmp(tool_b))
-    //     });
-    //     tools
-    // };
-
-    // println!("Tool grouping order (largest->smallest):");
-    // for &(tool_dia_pix, tool_i, count) in &tools {
-    //     println!("  tool_i={tool_i} tool_dia_pix={tool_dia_pix} toolpaths={count}");
-    // }
-
     // Add traverse moves after merging, so transitions can span tile boundaries.
     let mut base_im = Lum16Im::new(roi.w(), roi.h());
     base_im.arr.fill(bulk_top_thou.0 as u16);
     let mut sim_im_for_traverse = base_im.clone();
-    // toolpath::add_traverse_toolpaths(&mut sim_im_for_traverse, &mut all_toolpaths);
-
-    // for &(tool_dia_pix, tool_i, _count) in &tools {
-    //     let _new_toolpaths = toolpath::add_traverse_toolpaths_one_tool(
-    //         &mut sim_im_for_traverse,
-    //         &mut all_toolpaths,
-    //         tool_i,
-    //         tool_dia_pix,
-    //     );
-    // }
 
     let n_total_toolpaths: usize = toolpaths_by_tool_i.values().map(|tps| tps.len()).sum();
 
@@ -840,7 +807,7 @@ fn main() {
             tool_dia_pix,
         );
         
-        assert!(toolpaths.len() == traverse_toolpaths.len() + 1);
+        assert_eq!(toolpaths.len(), traverse_toolpaths.len());
 
         // Interleave: toolpath0, traverse0, toolpath1, traverse1, ..., toolpathN.
         let mut toolpaths_iter = toolpaths.into_iter();

@@ -1198,6 +1198,25 @@ mod imp {
                                                     );
 
                                                     ui.separator();
+                                                    let (min_z, max_z) = tp.points.iter().fold(
+                                                        (None::<i32>, None::<i32>),
+                                                        |(min_z, max_z), p| {
+                                                            let min_z = Some(min_z.map_or(p.z, |z| z.min(p.z)));
+                                                            let max_z = Some(max_z.map_or(p.z, |z| z.max(p.z)));
+                                                            (min_z, max_z)
+                                                        },
+                                                    );
+                                                    monospace_wrap(
+                                                        ui,
+                                                        match (min_z, max_z) {
+                                                            (Some(min_z), Some(max_z)) => {
+                                                                format!("z_thou=[{min_z}..{max_z}]")
+                                                            }
+                                                            _ => "z_thou=none".to_owned(),
+                                                        },
+                                                    );
+
+                                                    ui.separator();
                                                     monospace_wrap(
                                                         ui,
                                                         format!(
