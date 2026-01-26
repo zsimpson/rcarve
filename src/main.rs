@@ -9,10 +9,14 @@ use rcarve::sim;
 use rcarve::toolpath;
 
 use std::collections::HashMap;
+use std::fs;
+use std::io::BufWriter;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Instant;
+
+use serde::Serialize;
 
 fn tool_i_and_dia_pix(tool_descs: &[ToolDesc], tool_guid: &Guid, ppi: usize) -> (usize, usize) {
     let (tool_i, tool_desc) = tool_descs
@@ -33,6 +37,52 @@ fn tool_i_and_dia_pix(tool_descs: &[ToolDesc], tool_guid: &Guid, ppi: usize) -> 
     };
     let tool_dia_pix = ((tool_dia_in * ppi as f64).round() as usize).max(1);
     (tool_i, tool_dia_pix)
+}
+
+fn tool_dia_inch(tool_desc: &ToolDesc) -> f64 {
+    match tool_desc.units {
+        Units::Inch => tool_desc.diameter,
+        Units::Mm => tool_desc.diameter / 25.4,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolpathsPerToolJson {
+    tool_guid: String,
+    tool_i: usize,
+    tool_dia_pix: usize,
+    tool_dia_inch: f64,
+    ppi: usize,
+    toolpaths: Vec<ToolpathJson>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ToolpathJson {
+    is_cut: bool,
+    cuts: [u64; 2],
+    points: Vec<i32>,
+}
+
+fn toolpath_to_json(tp: &toolpath::ToolPath) -> ToolpathJson {
+    let mut pixels_changed: u64 = 0;
+    let mut depth_sum_thou: u64 = 0;
+    for c in &tp.cuts {
+        pixels_changed += c.pixels_changed;
+        depth_sum_thou += c.depth_sum_thou;
+    }
+
+    let mut points: Vec<i32> = Vec::with_capacity(tp.points.len().saturating_mul(3));
+    for p in &tp.points {
+        points.push(p.x);
+        points.push(p.y);
+        points.push(p.z);
+    }
+
+    ToolpathJson {
+        is_cut: !tp.is_traverse,
+        cuts: [pixels_changed, depth_sum_thou],
+        points,
+    }
 }
 
 #[allow(dead_code)]
@@ -796,6 +846,17 @@ fn main() {
     // Total entries = sum_k (toolpaths_k + traverses_k) = sum_k (2*toolpaths_k - 1).
     let mut all_toolpaths = Vec::with_capacity(n_total_toolpaths * 2);
     for (tool_dia_pix, tool_i) in tools {
+        let tool_desc = comp_desc
+            .tool_descs
+            .get(tool_i)
+            .unwrap_or_else(|| panic!("tool_i {tool_i} out of range for tool_descs (len={})", comp_desc.tool_descs.len()));
+        let tool_guid = tool_desc.guid.to_string();
+        let tool_dia_inch = tool_dia_inch(tool_desc);
+        let safe_tool_guid: String = tool_guid
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+            .collect();
+
         let mut toolpaths = toolpaths_by_tool_i
             .remove(&tool_i)
             .expect("tool_i should exist in map");
@@ -812,12 +873,33 @@ fn main() {
         // Interleave: toolpath0, traverse0, toolpath1, traverse1, ..., toolpathN.
         let mut toolpaths_iter = toolpaths.into_iter();
         let mut traverses_iter = traverse_toolpaths.into_iter();
+        let mut json_toolpaths: Vec<ToolpathJson> = Vec::new();
         while let Some(tp) = toolpaths_iter.next() {
+            json_toolpaths.push(toolpath_to_json(&tp));
             all_toolpaths.push(tp);
             if let Some(trav) = traverses_iter.next() {
+                json_toolpaths.push(toolpath_to_json(&trav));
                 all_toolpaths.push(trav);
             }
         }
+
+        // Save JSON toolpaths per tool for debugging
+        let out_dir = std::path::Path::new("target/toolpaths");
+        fs::create_dir_all(out_dir).expect("failed to create target/toolpaths");
+        let out_path = out_dir.join(format!("tool_{tool_i}_{safe_tool_guid}.json"));
+        let out = ToolpathsPerToolJson {
+            tool_guid,
+            tool_i,
+            tool_dia_pix,
+            tool_dia_inch,
+            ppi,
+            toolpaths: json_toolpaths,
+        };
+        let f = std::fs::File::create(&out_path)
+            .unwrap_or_else(|e| panic!("failed to create {}: {e}", out_path.display()));
+        let w = BufWriter::new(f);
+        serde_json::to_writer_pretty(w, &out)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
     }
 
     println!("elapsed before movie: {:.3}s", t0.elapsed().as_secs_f64());
