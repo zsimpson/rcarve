@@ -721,6 +721,81 @@ fn carve_roi(comp_desc: &CompDesc, global_roi: ROI, roi: ROI, ppi: usize) -> Vec
     all_toolpaths
 }
 
+// COnvert the toolpaths per tool into gcode lines
+// Each is_cut will be a G1 move, each traverse a G0 move
+fn to_gcode(json: &ToolpathsPerToolJson) -> String {
+    // Convention:
+    // - X/Y are inches in absolute coordinates derived from pixels via `ppi`.
+    // - Z is inches derived from `thou` via /1000.0.
+    //   (This assumes `z` in the toolpaths is a height-above-zero value in thou.)
+    const CLEARANCE_Z_INCH: f64 = 0.1;
+    const FEED_IPM: f64 = 60.0;
+    const PLUNGE_IPM: f64 = 30.0;
+
+    let ppi_f = json.ppi as f64;
+
+    let mut max_z_in: f64 = 0.0;
+    for tp in &json.toolpaths {
+        for xyz in tp.points.chunks_exact(3) {
+            let z_in = (xyz[2] as f64) / 1000.0;
+            if z_in > max_z_in {
+                max_z_in = z_in;
+            }
+        }
+    }
+    let safe_z_in = max_z_in + CLEARANCE_Z_INCH;
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "; rcarve toolpaths\n; tool_guid={} tool_i={} tool_dia_inch={:.6} tool_dia_pix={} ppi={}\n",
+        json.tool_guid, json.tool_i, json.tool_dia_inch, json.tool_dia_pix, json.ppi
+    ));
+    out.push_str("G20\n"); // inches
+    out.push_str("G90\n"); // absolute
+    out.push_str("G17\n"); // XY plane
+    out.push_str("G94\n"); // units/min
+    out.push_str(&format!("G0 Z{safe_z_in:.4}\n"));
+
+    for (tp_i, tp) in json.toolpaths.iter().enumerate() {
+        let mut pts = tp.points.chunks_exact(3);
+        let Some(first) = pts.next() else {
+            continue;
+        };
+
+        let x0 = (first[0] as f64) / ppi_f;
+        let y0 = (first[1] as f64) / ppi_f;
+        let z0 = (first[2] as f64) / 1000.0;
+
+        if tp.is_cut {
+            out.push_str(&format!("; tp[{tp_i}] cut cuts=[{}, {}]\n", tp.cuts[0], tp.cuts[1]));
+            // Safe approach then plunge, then follow the polyline.
+            out.push_str(&format!("G0 X{x0:.4} Y{y0:.4} Z{safe_z_in:.4}\n"));
+            out.push_str(&format!("G1 Z{z0:.4} F{PLUNGE_IPM:.1}\n"));
+            out.push_str(&format!("G1 X{x0:.4} Y{y0:.4} Z{z0:.4} F{FEED_IPM:.1}\n"));
+            for xyz in pts {
+                let x = (xyz[0] as f64) / ppi_f;
+                let y = (xyz[1] as f64) / ppi_f;
+                let z = (xyz[2] as f64) / 1000.0;
+                out.push_str(&format!("G1 X{x:.4} Y{y:.4} Z{z:.4}\n"));
+            }
+        } else {
+            out.push_str(&format!("; tp[{tp_i}] traverse cuts=[{}, {}]\n", tp.cuts[0], tp.cuts[1]));
+            // Traverse toolpaths are already computed to be safe; emit as rapid moves.
+            out.push_str(&format!("G0 X{x0:.4} Y{y0:.4} Z{z0:.4}\n"));
+            for xyz in pts {
+                let x = (xyz[0] as f64) / ppi_f;
+                let y = (xyz[1] as f64) / ppi_f;
+                let z = (xyz[2] as f64) / 1000.0;
+                out.push_str(&format!("G0 X{x:.4} Y{y:.4} Z{z:.4}\n"));
+            }
+        }
+    }
+
+    out.push_str(&format!("G0 Z{safe_z_in:.4}\n"));
+    out.push_str("M2\n");
+    out
+}
+
 fn main() {
     // Pixels per inch used for conversions between inches and pixels.
     let ppi: usize = 100_usize;
@@ -900,6 +975,14 @@ fn main() {
         let w = BufWriter::new(f);
         serde_json::to_writer_pretty(w, &out)
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
+
+        // Save G-code per tool for debugging/visualization.
+        let gcode_dir = std::path::Path::new("target/gcode");
+        fs::create_dir_all(gcode_dir).expect("failed to create target/gcode");
+        let gcode_path = gcode_dir.join(format!("tool_{tool_i}_{safe_tool_guid}.nc"));
+        let gcode = to_gcode(&out);
+        fs::write(&gcode_path, gcode)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", gcode_path.display()));
     }
 
     println!("elapsed before movie: {:.3}s", t0.elapsed().as_secs_f64());
