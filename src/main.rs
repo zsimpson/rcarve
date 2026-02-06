@@ -47,23 +47,25 @@ fn tool_dia_inch(tool_desc: &ToolDesc) -> f64 {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ToolpathsPerToolJson {
+struct SingleToolOut {
     tool_guid: String,
     tool_i: usize,
     tool_dia_pix: usize,
     tool_dia_inch: f64,
     ppi: usize,
-    toolpaths: Vec<ToolpathJson>,
+    tile_n: usize,
+    toolpaths: Vec<ToolpathOut>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct ToolpathJson {
+struct ToolpathOut {
     is_cut: bool,
     cuts: [u64; 2],
     points: Vec<i32>,
+    tile_i: usize,
 }
 
-fn toolpath_to_json(tp: &toolpath::ToolPath) -> ToolpathJson {
+fn toolpath_to_toolpath_out(tp: &toolpath::ToolPath) -> ToolpathOut {
     let mut pixels_changed: u64 = 0;
     let mut depth_sum_thou: u64 = 0;
     for c in &tp.cuts {
@@ -78,10 +80,11 @@ fn toolpath_to_json(tp: &toolpath::ToolPath) -> ToolpathJson {
         points.push(p.z);
     }
 
-    ToolpathJson {
+    ToolpathOut {
         is_cut: !tp.is_traverse,
         cuts: [pixels_changed, depth_sum_thou],
         points,
+        tile_i: tp.tile_i,
     }
 }
 
@@ -415,7 +418,10 @@ fn carve_rois_in_pool(
 
             match msg {
                 Ok(Some((tile_i, tile_roi))) => {
-                    let toolpaths = carve_roi(&comp_desc, global_roi, tile_roi, ppi);
+                    let mut toolpaths = carve_roi(&comp_desc, global_roi, tile_roi, ppi);
+                    for tp in toolpaths.iter_mut() {
+                        tp.tile_i = tile_i;
+                    }
                     let _ = res_tx.send((tile_i, toolpaths));
                 }
                 Ok(None) | Err(_) => break,
@@ -723,7 +729,7 @@ fn carve_roi(comp_desc: &CompDesc, global_roi: ROI, roi: ROI, ppi: usize) -> Vec
 
 // COnvert the toolpaths per tool into gcode lines
 // Each is_cut will be a G1 move, each traverse a G0 move
-fn to_gcode(json: &ToolpathsPerToolJson) -> String {
+fn to_gcode(json: &SingleToolOut) -> String {
     // Convention:
     // - X/Y are inches in absolute coordinates derived from pixels via `ppi`.
     // - Z is inches derived from `thou` via /1000.0.
@@ -734,27 +740,139 @@ fn to_gcode(json: &ToolpathsPerToolJson) -> String {
 
     let ppi_f = json.ppi as f64;
 
-    let mut max_z_in: f64 = 0.0;
+    // Compute a safe Z in thou (exact integer units) so later comparisons are exact.
+    let mut max_z_thou: i32 = 0;
     for tp in &json.toolpaths {
         for xyz in tp.points.chunks_exact(3) {
-            let z_in = (xyz[2] as f64) / 1000.0;
-            if z_in > max_z_in {
-                max_z_in = z_in;
-            }
+            max_z_thou = max_z_thou.max(xyz[2]);
         }
     }
-    let safe_z_in = max_z_in + CLEARANCE_Z_INCH;
+    let clearance_thou: i32 = (CLEARANCE_Z_INCH * 1000.0).round() as i32;
+    let safe_z_thou: i32 = max_z_thou.saturating_add(clearance_thou);
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct ModalState {
+        x_pix: Option<i32>,
+        y_pix: Option<i32>,
+        z_thou: Option<i32>,
+        last_feed_ipm: Option<f64>,
+    }
+
+    fn fmt_xy_inch(pix: i32, ppi: f64) -> f64 {
+        (pix as f64) / ppi
+    }
+
+    fn fmt_z_inch(thou: i32) -> f64 {
+        (thou as f64) / 1000.0
+    }
+
+    fn push_g0(out: &mut String, st: &mut ModalState, x_pix: Option<i32>, y_pix: Option<i32>, z_thou: Option<i32>, ppi_f: f64) {
+        let mut any = false;
+        out.push_str("G0");
+
+        if let Some(x) = x_pix {
+            if st.x_pix.map_or(true, |px| px != x) {
+                out.push_str(&format!(" X{:.4}", fmt_xy_inch(x, ppi_f)));
+                st.x_pix = Some(x);
+                any = true;
+            }
+        }
+        if let Some(y) = y_pix {
+            if st.y_pix.map_or(true, |py| py != y) {
+                out.push_str(&format!(" Y{:.4}", fmt_xy_inch(y, ppi_f)));
+                st.y_pix = Some(y);
+                any = true;
+            }
+        }
+        if let Some(z) = z_thou {
+            if st.z_thou.map_or(true, |pz| pz != z) {
+                out.push_str(&format!(" Z{:.4}", fmt_z_inch(z)));
+                st.z_thou = Some(z);
+                any = true;
+            }
+        }
+
+        if any {
+            out.push('\n');
+        } else {
+            // No axis changed; roll back the prefix.
+            out.truncate(out.len().saturating_sub(2));
+        }
+    }
+
+    fn push_g1(out: &mut String, st: &mut ModalState, x_pix: Option<i32>, y_pix: Option<i32>, z_thou: Option<i32>, feed_ipm: Option<f64>, ppi_f: f64) {
+        let mut any_axis = false;
+        let mut any_feed = false;
+
+        out.push_str("G1");
+
+        if let Some(x) = x_pix {
+            if st.x_pix.map_or(true, |px| px != x) {
+                out.push_str(&format!(" X{:.4}", fmt_xy_inch(x, ppi_f)));
+                st.x_pix = Some(x);
+                any_axis = true;
+            }
+        }
+        if let Some(y) = y_pix {
+            if st.y_pix.map_or(true, |py| py != y) {
+                out.push_str(&format!(" Y{:.4}", fmt_xy_inch(y, ppi_f)));
+                st.y_pix = Some(y);
+                any_axis = true;
+            }
+        }
+        if let Some(z) = z_thou {
+            if st.z_thou.map_or(true, |pz| pz != z) {
+                out.push_str(&format!(" Z{:.4}", fmt_z_inch(z)));
+                st.z_thou = Some(z);
+                any_axis = true;
+            }
+        }
+
+        if let Some(f) = feed_ipm {
+            // Emit F when it differs from the last F we emitted.
+            if st.last_feed_ipm.map_or(true, |lf| (lf - f).abs() > 1e-9) {
+                out.push_str(&format!(" F{:.1}", f));
+                st.last_feed_ipm = Some(f);
+                any_feed = true;
+            }
+        }
+
+        if any_axis || any_feed {
+            out.push('\n');
+        } else {
+            out.truncate(out.len().saturating_sub(2));
+        }
+    }
+
+    fn push_comment(out: &mut String, s: &str) {
+        // Use `()`-style comments for compatibility with many CNC controllers.
+        // Replace any ')' to avoid prematurely closing the comment.
+        let safe = s.replace(')', "]");
+        out.push('(');
+        out.push_str(&safe);
+        out.push_str(")\n");
+    }
 
     let mut out = String::new();
-    out.push_str(&format!(
-        "; rcarve toolpaths\n; tool_guid={} tool_i={} tool_dia_inch={:.6} tool_dia_pix={} ppi={}\n",
-        json.tool_guid, json.tool_i, json.tool_dia_inch, json.tool_dia_pix, json.ppi
-    ));
-    out.push_str("G20\n"); // inches
-    out.push_str("G90\n"); // absolute
-    out.push_str("G17\n"); // XY plane
-    out.push_str("G94\n"); // units/min
-    out.push_str(&format!("G0 Z{safe_z_in:.4}\n"));
+    push_comment(&mut out, "rcarve toolpaths");
+    push_comment(
+        &mut out,
+        &format!(
+            "tool_guid={} tool_i={} tool_dia_inch={:.6} tool_dia_pix={} ppi={}",
+            json.tool_guid, json.tool_i, json.tool_dia_inch, json.tool_dia_pix, json.ppi
+        ),
+    );
+
+    // TODO: Softcode
+    out.push_str("G20 (Unit is inches)\n");
+    out.push_str(&format!("G0 Z${} (Unit is inches)\n", CLEARANCE_Z_INCH));
+    out.push_str("M03 (Spindle on)\n");
+
+    let mut st = ModalState::default();
+    // Start with a retract to safe Z (Z-only).
+    push_g0(&mut out, &mut st, None, None, Some(safe_z_thou), ppi_f);
+
+    let mut last_cut_tile_i: Option<usize> = None;
 
     for (tp_i, tp) in json.toolpaths.iter().enumerate() {
         let mut pts = tp.points.chunks_exact(3);
@@ -762,36 +880,66 @@ fn to_gcode(json: &ToolpathsPerToolJson) -> String {
             continue;
         };
 
-        let x0 = (first[0] as f64) / ppi_f;
-        let y0 = (first[1] as f64) / ppi_f;
-        let z0 = (first[2] as f64) / 1000.0;
+        let x0_pix: i32 = first[0];
+        let y0_pix: i32 = first[1];
+        let z0_thou: i32 = first[2];
 
         if tp.is_cut {
-            out.push_str(&format!("; tp[{tp_i}] cut cuts=[{}, {}]\n", tp.cuts[0], tp.cuts[1]));
-            // Safe approach then plunge, then follow the polyline.
-            out.push_str(&format!("G0 X{x0:.4} Y{y0:.4} Z{safe_z_in:.4}\n"));
-            out.push_str(&format!("G1 Z{z0:.4} F{PLUNGE_IPM:.1}\n"));
-            out.push_str(&format!("G1 X{x0:.4} Y{y0:.4} Z{z0:.4} F{FEED_IPM:.1}\n"));
+            if last_cut_tile_i != Some(tp.tile_i) {
+                let tile_1 = tp.tile_i.saturating_add(1);
+                let tile_n = json.tile_n.max(tile_1);
+                push_comment(
+                    &mut out,
+                    &format!("============================= TILE {tile_1} of {tile_n} ============================="),
+                );
+                last_cut_tile_i = Some(tp.tile_i);
+            }
+            push_comment(&mut out, &format!("tp[{tp_i}] cuts=[{}, {}]", tp.cuts[0], tp.cuts[1]));
+
+            // Always retract to safe Z before any XY reposition.
+            push_g0(&mut out, &mut st, None, None, Some(safe_z_thou), ppi_f);
+            // Reposition in XY at safe Z (omit Z if already at safe).
+            push_g0(&mut out, &mut st, Some(x0_pix), Some(y0_pix), None, ppi_f);
+            // Plunge (Z-only) at plunge feed.
+            push_g1(&mut out, &mut st, None, None, Some(z0_thou), Some(PLUNGE_IPM), ppi_f);
+
+            // Follow the polyline at cut feed.
             for xyz in pts {
-                let x = (xyz[0] as f64) / ppi_f;
-                let y = (xyz[1] as f64) / ppi_f;
-                let z = (xyz[2] as f64) / 1000.0;
-                out.push_str(&format!("G1 X{x:.4} Y{y:.4} Z{z:.4}\n"));
+                let x_pix: i32 = xyz[0];
+                let y_pix: i32 = xyz[1];
+                let z_thou: i32 = xyz[2];
+                push_g1(
+                    &mut out,
+                    &mut st,
+                    Some(x_pix),
+                    Some(y_pix),
+                    Some(z_thou),
+                    Some(FEED_IPM),
+                    ppi_f,
+                );
             }
         } else {
-            out.push_str(&format!("; tp[{tp_i}] traverse cuts=[{}, {}]\n", tp.cuts[0], tp.cuts[1]));
-            // Traverse toolpaths are already computed to be safe; emit as rapid moves.
-            out.push_str(&format!("G0 X{x0:.4} Y{y0:.4} Z{z0:.4}\n"));
+            push_comment(
+                &mut out,
+                &format!("---- tp[{tp_i}] traverse"),
+            );
+            // Enforce a conservative traverse policy:
+            // retract to safe Z, traverse in XY at constant safe Z, and let the next cut handle plunging.
+
+            // Retract (Z-only).
+            push_g0(&mut out, &mut st, None, None, Some(safe_z_thou), ppi_f);
+            // Traverse to the first point in XY (no Z changes during traverse).
+            push_g0(&mut out, &mut st, Some(x0_pix), Some(y0_pix), None, ppi_f);
             for xyz in pts {
-                let x = (xyz[0] as f64) / ppi_f;
-                let y = (xyz[1] as f64) / ppi_f;
-                let z = (xyz[2] as f64) / 1000.0;
-                out.push_str(&format!("G0 X{x:.4} Y{y:.4} Z{z:.4}\n"));
+                let x_pix: i32 = xyz[0];
+                let y_pix: i32 = xyz[1];
+                push_g0(&mut out, &mut st, Some(x_pix), Some(y_pix), None, ppi_f);
             }
         }
     }
 
-    out.push_str(&format!("G0 Z{safe_z_in:.4}\n"));
+    // Final retract.
+    push_g0(&mut out, &mut st, None, None, Some(safe_z_thou), ppi_f);
     out.push_str("M2\n");
     out
 }
@@ -893,6 +1041,8 @@ fn main() {
         }
     }
 
+    let tile_n: usize = tile_rois.len();
+
     let all_toolpaths = carve_rois_in_pool(Arc::clone(&comp_desc), roi, tile_rois, ppi, n_workers);
 
     let mut toolpaths_by_tool_i = regroup_toolpaths_by_tool(all_toolpaths);
@@ -948,12 +1098,12 @@ fn main() {
         // Interleave: toolpath0, traverse0, toolpath1, traverse1, ..., toolpathN.
         let mut toolpaths_iter = toolpaths.into_iter();
         let mut traverses_iter = traverse_toolpaths.into_iter();
-        let mut json_toolpaths: Vec<ToolpathJson> = Vec::new();
+        let mut json_toolpaths: Vec<ToolpathOut> = Vec::new();
         while let Some(tp) = toolpaths_iter.next() {
-            json_toolpaths.push(toolpath_to_json(&tp));
+            json_toolpaths.push(toolpath_to_toolpath_out(&tp));
             all_toolpaths.push(tp);
             if let Some(trav) = traverses_iter.next() {
-                json_toolpaths.push(toolpath_to_json(&trav));
+                json_toolpaths.push(toolpath_to_toolpath_out(&trav));
                 all_toolpaths.push(trav);
             }
         }
@@ -962,12 +1112,13 @@ fn main() {
         let out_dir = std::path::Path::new("target/toolpaths");
         fs::create_dir_all(out_dir).expect("failed to create target/toolpaths");
         let out_path = out_dir.join(format!("tool_{tool_i}_{safe_tool_guid}.json"));
-        let out = ToolpathsPerToolJson {
+        let out = SingleToolOut {
             tool_guid,
             tool_i,
             tool_dia_pix,
             tool_dia_inch,
             ppi,
+            tile_n,
             toolpaths: json_toolpaths,
         };
         let f = std::fs::File::create(&out_path)
@@ -977,9 +1128,9 @@ fn main() {
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
 
         // Save G-code per tool for debugging/visualization.
-        let gcode_dir = std::path::Path::new("target/gcode");
-        fs::create_dir_all(gcode_dir).expect("failed to create target/gcode");
-        let gcode_path = gcode_dir.join(format!("tool_{tool_i}_{safe_tool_guid}.nc"));
+        // let gcode_dir = std::path::Path::new("target/gcode");
+        // fs::create_dir_all(out_dir).expect("failed to create target/gcode");
+        let gcode_path = out_dir.join(format!("tool_{tool_i}_{safe_tool_guid}.nc"));
         let gcode = to_gcode(&out);
         fs::write(&gcode_path, gcode)
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", gcode_path.display()));

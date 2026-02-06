@@ -45,6 +45,9 @@ pub struct ToolPath {
     pub closed: bool,
     pub tool_dia_pix: usize,
     pub tool_i: usize,
+    /// Index of the source tile ROI this toolpath originated from (0-based).
+    /// This is assigned by the tiling/dispatch layer (e.g. `main.rs`).
+    pub tile_i: usize,
     pub tree_node_id: usize,
     /// Per-segment cut accounting. `cuts[i]` corresponds to the segment `points[i] -> points[i+1]`.
     /// The last entry is unused (so `cuts.len() == points.len()`).
@@ -77,6 +80,7 @@ fn create_perimeter_tool_paths(
         closed: true,
         tool_dia_pix,
         tool_i,
+        tile_i: 0,
         tree_node_id,
         cuts,
         is_traverse: false,
@@ -161,6 +165,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                     closed: false,
                     tool_dia_pix,
                     tool_i,
+                    tile_i: 0,
                     tree_node_id,
                     cuts: vec![CutPixels::default(); 2],
                     is_traverse: false,
@@ -188,6 +193,7 @@ fn create_raster_surface_tool_paths_from_cut_mask(
                 closed: false,
                 tool_dia_pix,
                 tool_i,
+                tile_i: 0,
                 tree_node_id,
                 cuts: vec![CutPixels::default(); 2],
                 is_traverse: false,
@@ -657,6 +663,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         closed: true,
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
+                        tile_i: tp.tile_i,
                         tree_node_id: tp.tree_node_id,
                         cuts: vec![CutPixels::default(); pts_len],
                         is_traverse,
@@ -669,6 +676,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         closed: false,
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
+                        tile_i: tp.tile_i,
                         tree_node_id: tp.tree_node_id,
                         cuts: vec![CutPixels::default(); pts_len],
                         is_traverse,
@@ -688,6 +696,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                     closed: false,
                     tool_dia_pix: tp.tool_dia_pix,
                     tool_i: tp.tool_i,
+                    tile_i: tp.tile_i,
                     tree_node_id: tp.tree_node_id,
                     cuts: vec![CutPixels::default(); 2],
                     is_traverse,
@@ -715,6 +724,7 @@ pub fn break_long_toolpaths(toolpaths: &mut Vec<ToolPath>, max_segment_len_pix: 
                         closed: false,
                         tool_dia_pix: tp.tool_dia_pix,
                         tool_i: tp.tool_i,
+                        tile_i: tp.tile_i,
                         tree_node_id: tp.tree_node_id,
                         cuts: vec![CutPixels::default(); 2],
                         is_traverse,
@@ -995,6 +1005,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
         seg_cuts: Vec<CutPixels>,
         tool_dia_pix: usize,
         tool_i: usize,
+        tile_i: usize,
         tree_node_id: usize,
         is_traverse: bool,
         is_raster: bool,
@@ -1017,6 +1028,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
             closed: false,
             tool_dia_pix,
             tool_i,
+            tile_i,
             tree_node_id,
             cuts,
             is_traverse,
@@ -1029,6 +1041,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
         cuts_in: Vec<CutPixels>,
         tool_dia_pix: usize,
         tool_i: usize,
+        tile_i: usize,
         tree_node_id: usize,
         is_traverse: bool,
         is_raster: bool,
@@ -1059,6 +1072,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                     std::mem::take(&mut run_cuts),
                     tool_dia_pix,
                     tool_i,
+                    tile_i,
                     tree_node_id,
                     is_traverse,
                     is_raster,
@@ -1072,6 +1086,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 run_cuts,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 is_traverse,
                 is_raster,
@@ -1086,6 +1101,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
         mut cuts_in: Vec<CutPixels>,
         tool_dia_pix: usize,
         tool_i: usize,
+        tile_i: usize,
         tree_node_id: usize,
         is_traverse: bool,
         is_raster: bool,
@@ -1117,6 +1133,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 closed: true,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 cuts: vec![CutPixels::default(); n],
                 is_traverse,
@@ -1148,6 +1165,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 closed: true,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 cuts: cuts_in,
                 is_traverse,
@@ -1180,6 +1198,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                     std::mem::take(&mut run_cuts),
                     tool_dia_pix,
                     tool_i,
+                    tile_i,
                     tree_node_id,
                     is_traverse,
                     is_raster,
@@ -1195,6 +1214,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 run_cuts,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 is_traverse,
                 is_raster,
@@ -1211,6 +1231,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
             closed,
             tool_dia_pix,
             tool_i,
+            tile_i,
             tree_node_id,
             cuts,
             is_traverse,
@@ -1229,6 +1250,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 closed,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 cuts,
                 is_traverse,
@@ -1243,6 +1265,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 cuts,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 is_traverse,
                 is_raster,
@@ -1253,6 +1276,7 @@ pub fn cull_empty_toolpaths(toolpaths: &mut Vec<ToolPath>) {
                 cuts,
                 tool_dia_pix,
                 tool_i,
+                tile_i,
                 tree_node_id,
                 is_traverse,
                 is_raster,
@@ -1282,9 +1306,9 @@ pub fn add_traverse_toolpaths_one_tool<'a>(
     //
     // We must not borrow `toolpaths` inside the sim callback because `sim_toolpaths`
     // holds a mutable borrow of the slice for the duration of simulation.
-    let tool_meta: Vec<(usize, usize, usize)> = toolpaths
+    let tool_meta: Vec<(usize, usize, usize, usize)> = toolpaths
         .iter()
-        .map(|tp| (tp.tool_i, tp.tool_dia_pix, tp.points.len()))
+        .map(|tp| (tp.tool_i, tp.tool_dia_pix, tp.points.len(), tp.tile_i))
         .collect();
 
     let n_toolpaths = toolpaths.len();
@@ -1315,7 +1339,7 @@ pub fn add_traverse_toolpaths_one_tool<'a>(
                         _p0: IV3,
                         p1: IV3,
                         _seg_cut: CutPixels| {
-        let Some(&(tp_tool_i, tp_tool_dia_pix, tp_points_len)) = tool_meta.get(toolpath_i) else {
+        let Some(&(tp_tool_i, tp_tool_dia_pix, tp_points_len, tp_tile_i)) = tool_meta.get(toolpath_i) else {
             return;
         };
 
@@ -1426,6 +1450,7 @@ pub fn add_traverse_toolpaths_one_tool<'a>(
             closed: false,
             tool_dia_pix,
             tool_i,
+            tile_i: tp_tile_i,
             tree_node_id: toolpath_i, // Encode the source toolpath index
             cuts: vec![CutPixels::default(); n_verts],
             is_traverse: true,
@@ -1762,6 +1787,7 @@ mod tests {
                 closed: false,
                 tool_dia_pix: 1,
                 tool_i: 0,
+                tile_i: 0,
                 tree_node_id: 0,
                 cuts: vec![CutPixels::default(); 2],
                 is_traverse: false,
@@ -1772,6 +1798,7 @@ mod tests {
                 closed: false,
                 tool_dia_pix: 1,
                 tool_i: 0,
+                tile_i: 0,
                 tree_node_id: 0,
                 cuts: vec![CutPixels::default(); 2],
                 is_traverse: false,
@@ -1798,6 +1825,7 @@ mod tests {
             closed: false,
             tool_dia_pix: 1,
             tool_i: 0,
+            tile_i: 0,
             tree_node_id: 0,
             cuts: vec![CutPixels::default(); 2],
             is_traverse: false,
@@ -1822,6 +1850,7 @@ mod tests {
             closed: false,
             tool_dia_pix: 1,
             tool_i: 0,
+            tile_i: 0,
             tree_node_id: 0,
             cuts: vec![CutPixels::default(); 3],
             is_traverse: false,
@@ -1864,6 +1893,7 @@ mod tests {
             closed: false,
             tool_dia_pix: 1,
             tool_i: 0,
+            tile_i: 0,
             tree_node_id: 0,
             cuts: vec![cut(5), cut(0), cut(7), CutPixels::default()],
             is_traverse: false,
@@ -1894,6 +1924,7 @@ mod tests {
             closed: true,
             tool_dia_pix: 1,
             tool_i: 0,
+            tile_i: 0,
             tree_node_id: 0,
             cuts: vec![cut(3), cut(0), cut(4), CutPixels::default()],
             is_traverse: false,
@@ -2056,6 +2087,7 @@ mod tests {
                 closed: false,
                 tool_dia_pix: 1,
                 tool_i: 0,
+                tile_i: 0,
                 tree_node_id: some_node_id,
                 cuts: vec![CutPixels::default(); 2],
                 is_traverse: false,
@@ -2072,6 +2104,7 @@ mod tests {
                 closed: true,
                 tool_dia_pix: 1,
                 tool_i: 0,
+                tile_i: 0,
                 tree_node_id: some_node_id,
                 cuts: vec![CutPixels::default(); 4],
                 is_traverse: false,
@@ -2257,7 +2290,20 @@ mod tests {
         // Movie behavior: splice traverse toolpaths, then replay *all* toolpaths.
         let mut movie_toolpaths = toolpaths;
         let mut scratch_for_traverse = base.clone();
-        add_traverse_toolpaths(&mut scratch_for_traverse, &mut movie_toolpaths);
+
+        let traverses = add_traverse_toolpaths_one_tool(
+            &mut scratch_for_traverse,
+            &mut movie_toolpaths,
+            0,
+            tool_dia_pix,
+        );
+        assert_eq!(movie_toolpaths.len(), traverses.len());
+        let mut interleaved: Vec<ToolPath> = Vec::with_capacity(movie_toolpaths.len() * 2);
+        for (cut_tp, trav_tp) in movie_toolpaths.into_iter().zip(traverses.into_iter()) {
+            interleaved.push(cut_tp);
+            interleaved.push(trav_tp);
+        }
+        let mut movie_toolpaths = interleaved;
         let mut movie = base;
         crate::sim::sim_toolpaths(&mut movie, &mut movie_toolpaths, None);
 
